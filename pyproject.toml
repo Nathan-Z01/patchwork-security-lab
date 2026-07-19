@@ -1,0 +1,102 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "patchwork-security-lab"
+dynamic = ["version"]
+description = "Reproducible code-repair benchmarks and evidence-first AI security scanning."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Nathan Zhou" }]
+keywords = ["machine-learning", "security", "benchmark", "code-repair", "ai-safety"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Security",
+  "Topic :: Software Development :: Testing",
+]
+dependencies = [
+  "fastapi>=0.115,<1",
+  "pydantic>=2,<3",
+  "uvicorn>=0.30,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/Nathan-Z01/patchwork-security-lab"
+Repository = "https://github.com/Nathan-Z01/patchwork-security-lab"
+Issues = "https://github.com/Nathan-Z01/patchwork-security-lab/issues"
+Documentation = "https://github.com/Nathan-Z01/patchwork-security-lab/blob/main/docs/USER_GUIDE.md"
+Changelog = "https://github.com/Nathan-Z01/patchwork-security-lab/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = [
+  "httpx2>=2,<3",
+  "mypy>=1.10,<2",
+  "pytest>=8,<9",
+  "pytest-cov>=5,<7",
+  "ruff>=0.6,<1",
+]
+
+[project.scripts]
+freshpatch = "freshpatch.cli:main"
+aisec = "aisec.cli:main"
+patchwork-api = "patchwork_api.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "patchwork_common.__version__" }
+
+[tool.setuptools.package-data]
+patchwork_api = ["dashboard/index.html", "dashboard/assets/*"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers --disable-warnings"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["freshpatch", "aisec", "patchwork_api"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 75
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "S"]
+ignore = [
+  "S101", # assert is appropriate in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S108"]
+"examples/**" = ["S105", "S106"]
+"src/patchwork_api/app.py" = [
+  "UP045", # Pydantic must evaluate these models on supported Python 3.9.
+]
+
+[tool.mypy]
+python_version = "3.9"
+check_untyped_defs = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["anyio.*", "fastapi.*", "pydantic.*", "starlette.*", "uvicorn.*"]
+follow_imports = "skip"

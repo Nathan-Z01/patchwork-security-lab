@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - run: uv sync --extra dev --frozen
+      - run: uv run ruff check src tests scripts
+      - run: uv run pytest --cov --cov-report=term-missing
+      - if: matrix.python-version == '3.12'
+        run: uv run mypy src
+
+  dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/dashboard
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/dashboard/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test -- --run
+      - run: npm run build
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/dashboard/package-lock.json
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: npm --prefix apps/dashboard ci
+      - run: python3 scripts/build_dashboard.py --skip-install
+      - run: git diff --exit-code -- src/patchwork_api/dashboard
+      - run: uv build --clear
+      - name: Smoke-test the clean wheel and bundled dashboard
+        run: |
+          uv venv .wheel-smoke
+          uv pip install --python .wheel-smoke/bin/python dist/*.whl
+          .wheel-smoke/bin/freshpatch --help >/dev/null
+          .wheel-smoke/bin/aisec --help >/dev/null
+          PATCHWORK_PORT=8765 PATCHWORK_WORKSPACE_ROOT="$PWD" \
+            .wheel-smoke/bin/patchwork-api >wheel-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:8765/api/health >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              cat wheel-server.log
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8765/api/health | grep --quiet '"status":"ok"'
+          curl --fail --silent http://127.0.0.1:8765/ | grep --quiet 'id="root"'
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - run: docker build --tag patchwork-security-lab:test .
+      - name: Smoke-test container health, dashboard, and source scanning
+        run: |
+          container_id=$(docker run --detach \
+            --name patchwork-ci \
+            --read-only \
+            --tmpfs /tmp:size=64m,noexec,nosuid \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --volume "$PWD:/workspace:ro" \
+            --publish 127.0.0.1:8765:8000 \
+            patchwork-security-lab:test)
+          cleanup() {
+            docker logs "$container_id" || true
+            docker rm --force "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          for attempt in {1..30}; do
+            health=$(docker inspect --format='{{.State.Health.Status}}' "$container_id")
+            if [ "$health" = "healthy" ]; then
+              break
+            fi
+            if [ "$health" = "unhealthy" ]; then
+              exit 1
+            fi
+            sleep 2
+          done
+          test "$(docker inspect --format='{{.State.Health.Status}}' "$container_id")" = "healthy"
+          curl --fail --silent http://127.0.0.1:8765/ | grep --quiet 'id="root"'
+          curl --fail --silent \
+            --header 'Content-Type: application/json' \
+            --data '{"path":"src/patchwork_api","max_files":1000}' \
+            http://127.0.0.1:8765/api/scans/source \
+            | python3 -c 'import json, sys; result = json.load(sys.stdin); assert result["target_type"] == "source"'
+
+  self-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --extra dev --frozen
+      - run: uv run aisec source . --format sarif --output patchwork.sarif --fail-on high
+      - uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4
+        if: ${{ always() && hashFiles('patchwork.sarif') != '' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        with:
+          sarif_file: patchwork.sarif

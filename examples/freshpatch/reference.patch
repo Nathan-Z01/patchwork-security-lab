@@ -1,0 +1,7 @@
+diff --git a/calculator.py b/calculator.py
+index c29483e..69309ed 100644
+--- a/calculator.py
++++ b/calculator.py
+@@ -7 +7 @@ def average(total, count):
+-    return total // count
++    return total / count

@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Nathan-Z01/patchwork-security-lab/main/docs/freshpatch/qualification.schema.json",
+  "title": "FreshPatch task qualification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "qualification_schema_version",
+    "task_id",
+    "task_sha256",
+    "status",
+    "qualified",
+    "reason",
+    "started_at",
+    "completed_at",
+    "duration_seconds",
+    "environment",
+    "checks"
+  ],
+  "properties": {
+    "qualification_schema_version": { "const": "1.1" },
+    "task_id": { "type": "string", "minLength": 1 },
+    "task_sha256": { "$ref": "result.schema.json#/$defs/sha256" },
+    "status": { "enum": ["qualified", "rejected"] },
+    "qualified": { "type": "boolean" },
+    "reason": { "type": "string", "minLength": 1 },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+    },
+    "duration_seconds": { "type": "number", "minimum": 0 },
+    "environment": { "$ref": "result.schema.json#/$defs/environment" },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseline", "reference"],
+      "properties": {
+        "baseline": {
+          "allOf": [
+            { "$ref": "result.schema.json" },
+            { "properties": { "patch": { "properties": { "kind": { "const": "none" } } } } }
+          ]
+        },
+        "reference": {
+          "allOf": [
+            { "$ref": "result.schema.json" },
+            { "properties": { "patch": { "properties": { "kind": { "const": "reference" } } } } }
+          ]
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "status": { "const": "qualified" },
+        "qualified": { "const": true },
+        "checks": {
+          "properties": {
+            "baseline": { "properties": { "status": { "const": "failed" } } },
+            "reference": { "properties": { "status": { "const": "passed" } } }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "status": { "const": "rejected" },
+        "qualified": { "const": false },
+        "checks": {
+          "not": {
+            "properties": {
+              "baseline": { "properties": { "status": { "const": "failed" } } },
+              "reference": { "properties": { "status": { "const": "passed" } } }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

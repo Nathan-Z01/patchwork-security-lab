@@ -1,0 +1,54 @@
+{
+  "description": "Repair integer truncation in a tiny arithmetic function.",
+  "id": "tiny-average-repair",
+  "labels": [
+    "python",
+    "correctness"
+  ],
+  "provenance": {
+    "builder_version": "freshpatch/1",
+    "fixed_commit_subject": "Preserve fractional averages",
+    "fixed_commit_timestamp": "2025-01-02T00:00:00Z"
+  },
+  "reference_patch": {
+    "diff": "diff --git a/calculator.py b/calculator.py\nindex 2630c82ae27f7d6e5f7b1c3fd06d953709835d58..c9ea2f91b6ede300f846c0ea9caf2877c4e3ca25 100644\n--- a/calculator.py\n+++ b/calculator.py\n@@ -4,4 +4,4 @@\n def average(total, count):\n     \"\"\"Return the arithmetic mean of ``total`` over ``count`` items.\"\"\"\n \n-    return total // count\n+    return total / count\n",
+    "format": "git-diff",
+    "sha256": "66bad0a2cd286dc454c375c8a07f403e1a01de1286eeb46c214b6d0c057df1a4"
+  },
+  "repository": {
+    "buggy_revision": "aab0312eb70dcb3e375098a96c56fb33aa0a7bcf",
+    "changed_files": [
+      "calculator.py"
+    ],
+    "fixed_revision": "29c8ed5f05cf790c25685d10f9d71717d7bab20e",
+    "source": "."
+  },
+  "runner": {
+    "image": "python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de",
+    "policy": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "cpus": "1.0",
+      "memory": "1g",
+      "network": "none",
+      "no_new_privileges": true,
+      "pids_limit": 256,
+      "read_only_root": true,
+      "tmpfs_size": "128m"
+    }
+  },
+  "schema_version": "1.1",
+  "test": {
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "-q"
+    ],
+    "environment": {},
+    "timeout_seconds": 30,
+    "working_directory": "."
+  },
+  "title": "Preserve fractional averages"
+}

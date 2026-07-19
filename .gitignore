@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.coverage
+htmlcov/
+.venv/
+dist/
+build/
+
+# JavaScript
+node_modules/
+apps/dashboard/dist/
+apps/dashboard/.vite/
+*.tsbuildinfo
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+.npmrc
+.pypirc
+.netrc
+_netrc
+.git-credentials
+.aws/credentials
+
+# Scanner and benchmark runtime artifacts
+.patchwork/
+reports/local/
+*.sarif
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+.impeccable/

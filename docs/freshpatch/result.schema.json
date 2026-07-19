@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Nathan-Z01/patchwork-security-lab/main/docs/freshpatch/result.schema.json",
+  "title": "FreshPatch evaluation result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "result_schema_version",
+    "task_id",
+    "task_sha256",
+    "status",
+    "backend",
+    "duration_seconds",
+    "started_at",
+    "environment",
+    "patch",
+    "process"
+  ],
+  "properties": {
+    "result_schema_version": { "const": "1.2" },
+    "task_id": { "type": "string", "minLength": 1 },
+    "task_sha256": { "$ref": "#/$defs/sha256" },
+    "status": { "enum": ["passed", "failed", "timeout", "error"] },
+    "backend": { "enum": ["docker", "local"] },
+    "duration_seconds": { "type": "number", "minimum": 0 },
+    "started_at": { "$ref": "#/$defs/timestamp" },
+    "environment": { "$ref": "#/$defs/environment" },
+    "patch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sha256", "applied"],
+      "properties": {
+        "kind": { "enum": ["none", "candidate", "reference"] },
+        "sha256": {
+          "oneOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "applied": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "none" } } },
+          "then": {
+            "properties": {
+              "sha256": { "type": "null" },
+              "applied": { "const": false }
+            }
+          },
+          "else": { "properties": { "sha256": { "$ref": "#/$defs/sha256" } } }
+        }
+      ]
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exit_code", "command", "stdout", "stderr"],
+      "properties": {
+        "exit_code": { "type": ["integer", "null"] },
+        "command": { "type": "array", "items": { "type": "string" } },
+        "stdout": { "type": "string" },
+        "stderr": { "type": "string" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "passed" } } },
+      "then": {
+        "properties": {
+          "process": {
+            "properties": {
+              "exit_code": { "const": 0 },
+              "command": { "minItems": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "failed" } } },
+      "then": {
+        "properties": {
+          "process": {
+            "properties": {
+              "exit_code": { "type": "integer", "not": { "const": 0 } },
+              "command": { "minItems": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "error" } } },
+      "then": {
+        "properties": {
+          "process": {
+            "properties": {
+              "exit_code": {
+                "oneOf": [
+                  { "type": "null" },
+                  { "type": "integer", "not": { "const": 0 } }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "timeout" } } },
+      "then": {
+        "properties": {
+          "process": { "properties": { "command": { "minItems": 1 } } }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": { "not": { "const": "error" } },
+          "patch": {
+            "properties": { "kind": { "not": { "const": "none" } } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "patch": { "properties": { "applied": { "const": true } } }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "backend": { "const": "docker" } } },
+      "then": { "properties": { "environment": { "$ref": "#/$defs/docker_environment" } } },
+      "else": { "properties": { "environment": { "$ref": "#/$defs/local_environment" } } }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["architecture", "os", "python"],
+      "properties": {
+        "architecture": { "type": "string", "minLength": 1 },
+        "os": { "type": "string", "minLength": 1 },
+        "python": { "type": "string", "minLength": 1 }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cap_drop",
+        "cpus",
+        "memory",
+        "network",
+        "no_new_privileges",
+        "output_limit",
+        "pids_limit",
+        "read_only_root",
+        "timeout_seconds",
+        "tmpfs_size"
+      ],
+      "properties": {
+        "cap_drop": { "type": "array", "items": { "type": "string" } },
+        "cpus": { "type": ["string", "null"] },
+        "memory": { "type": ["string", "null"] },
+        "network": { "enum": ["none", "host"] },
+        "no_new_privileges": { "type": "boolean" },
+        "output_limit": { "type": "integer", "minimum": 1 },
+        "pids_limit": { "type": ["integer", "null"] },
+        "read_only_root": { "type": "boolean" },
+        "timeout_seconds": { "type": "integer", "minimum": 1 },
+        "tmpfs_size": {
+          "type": ["string", "null"],
+          "description": "Independent size limit applied to each of /tmp and /workspace for Docker; null for local execution."
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "controller", "image", "policy", "unsafe_local"],
+      "properties": {
+        "backend": { "enum": ["docker", "local"] },
+        "controller": { "$ref": "#/$defs/controller" },
+        "image": {
+          "oneOf": [
+            { "type": "string", "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$" },
+            { "type": "null" }
+          ]
+        },
+        "policy": { "$ref": "#/$defs/policy" },
+        "unsafe_local": { "type": "boolean" }
+      }
+    },
+    "docker_environment": {
+      "allOf": [
+        { "$ref": "#/$defs/environment" },
+        {
+          "properties": {
+            "backend": { "const": "docker" },
+            "image": { "type": "string", "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$" },
+            "unsafe_local": { "const": false },
+            "policy": {
+              "properties": {
+                "cap_drop": { "const": ["ALL"] },
+                "cpus": { "type": "string", "pattern": "^(?=.*[1-9])[0-9]+(?:\\.[0-9]+)?$" },
+                "memory": { "type": "string", "pattern": "^(?=.*[1-9])[0-9]+(?:\\.[0-9]+)?[bkmg]?$" },
+                "network": { "const": "none" },
+                "no_new_privileges": { "const": true },
+                "pids_limit": { "type": "integer", "minimum": 16, "maximum": 4096 },
+                "read_only_root": { "const": true },
+                "tmpfs_size": { "type": "string", "pattern": "^(?=.*[1-9])[0-9]+(?:\\.[0-9]+)?[bkmg]?$" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "local_environment": {
+      "allOf": [
+        { "$ref": "#/$defs/environment" },
+        {
+          "properties": {
+            "backend": { "const": "local" },
+            "image": { "type": "null" },
+            "unsafe_local": { "const": true },
+            "policy": {
+              "properties": {
+                "cap_drop": { "const": [] },
+                "cpus": { "type": "null" },
+                "memory": { "type": "null" },
+                "network": { "const": "host" },
+                "no_new_privileges": { "const": false },
+                "pids_limit": { "type": "null" },
+                "read_only_root": { "const": false },
+                "tmpfs_size": { "type": "null" }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

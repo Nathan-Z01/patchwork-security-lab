@@ -1,0 +1,13 @@
+# Scanner tests intentionally embed vulnerable snippets. Suppress only the
+# exercised rules in those two files; every other test and example is scanned.
+AISEC001 tests/aisec/test_source.py
+AISEC002 tests/aisec/test_source.py
+AISEC101 tests/aisec/test_source.py
+AISEC104 tests/aisec/test_source.py
+AISEC101 tests/aisec/test_reports_cli.py
+AISEC001 tests/aisec/test_reports_cli.py
+
+# Generated frontend and local report artifacts.
+apps/dashboard/dist/**
+src/patchwork_api/dashboard/assets/**
+reports/local/**

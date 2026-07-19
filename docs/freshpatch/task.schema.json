@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Nathan-Z01/patchwork-security-lab/main/docs/freshpatch/task.schema.json",
+  "title": "FreshPatch task",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "title",
+    "description",
+    "labels",
+    "repository",
+    "test",
+    "reference_patch",
+    "provenance",
+    "runner"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.1" },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "labels": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "buggy_revision", "fixed_revision", "changed_files"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "buggy_revision": { "$ref": "#/$defs/revision" },
+        "fixed_revision": { "$ref": "#/$defs/revision" },
+        "changed_files": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "test": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "timeout_seconds", "working_directory", "environment"],
+      "properties": {
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "working_directory": { "type": "string" },
+        "environment": {
+          "type": "object",
+          "$comment": "Public metadata only. The FreshPatch validator also rejects credential-like names and recognizable token/private-key values.",
+          "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[^\\r\\n]*$"
+          }
+        }
+      }
+    },
+    "reference_patch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "sha256", "diff"],
+      "properties": {
+        "format": { "const": "git-diff" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "diff": { "type": "string", "minLength": 1 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixed_commit_subject", "fixed_commit_timestamp", "builder_version"],
+      "properties": {
+        "fixed_commit_subject": { "type": "string", "minLength": 1 },
+        "fixed_commit_timestamp": { "type": "string", "minLength": 1 },
+        "builder_version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "policy"],
+      "properties": {
+        "image": {
+          "type": "string",
+          "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
+        },
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cap_drop",
+            "cpus",
+            "memory",
+            "network",
+            "no_new_privileges",
+            "pids_limit",
+            "read_only_root",
+            "tmpfs_size"
+          ],
+          "properties": {
+            "cap_drop": { "const": ["ALL"] },
+            "cpus": { "type": "string", "pattern": "^(?=.*[1-9])[0-9]+(?:\\.[0-9]+)?$" },
+            "memory": { "type": "string", "pattern": "^(?=.*[1-9])[0-9]+(?:\\.[0-9]+)?[bkmg]?$" },
+            "network": { "const": "none" },
+            "no_new_privileges": { "const": true },
+            "pids_limit": { "type": "integer", "minimum": 16, "maximum": 4096 },
+            "read_only_root": { "const": true },
+            "tmpfs_size": {
+              "type": "string",
+              "pattern": "^(?=.*[1-9])[0-9]+(?:\\.[0-9]+)?[bkmg]?$",
+              "description": "Independent size limit applied to both /tmp and the writable /workspace tmpfs."
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{7,64}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

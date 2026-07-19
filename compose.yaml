@@ -1,0 +1,19 @@
+services:
+  patchwork:
+    build: .
+    ports:
+      - "127.0.0.1:8765:8000"
+    environment:
+      PATCHWORK_WORKSPACE_ROOT: /workspace
+      PATCHWORK_HOST: 0.0.0.0
+      PATCHWORK_PORT: 8000
+      PATCHWORK_MAX_CONCURRENT_SCANS: 4
+    volumes:
+      - .:/workspace:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
