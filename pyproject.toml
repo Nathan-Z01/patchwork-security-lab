@@ -5,13 +5,21 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "patchwork-security-lab"
 dynamic = ["version"]
-description = "Reproducible code-repair benchmarks and evidence-first AI security scanning."
+description = "Reproducible code-repair benchmarks, AI security scanning, and transparent stock research."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Nathan Zhou" }]
-keywords = ["machine-learning", "security", "benchmark", "code-repair", "ai-safety"]
+keywords = [
+  "machine-learning",
+  "security",
+  "benchmark",
+  "code-repair",
+  "ai-safety",
+  "quantitative-finance",
+  "time-series",
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -49,6 +57,7 @@ dev = [
 [project.scripts]
 freshpatch = "freshpatch.cli:main"
 aisec = "aisec.cli:main"
+signallab = "signallab.cli:main"
 patchwork-api = "patchwork_api.__main__:main"
 
 [tool.setuptools.packages.find]
@@ -66,7 +75,7 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["freshpatch", "aisec", "patchwork_api"]
+source = ["freshpatch", "aisec", "signallab", "patchwork_api"]
 
 [tool.coverage.report]
 show_missing = true

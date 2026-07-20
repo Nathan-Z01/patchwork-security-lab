@@ -18,6 +18,8 @@ def reset_api_state(monkeypatch):
     api_module._SCANS.clear()
     monkeypatch.setattr(api_module, "_scan_source_impl", None)
     monkeypatch.setattr(api_module, "_scan_url_impl", None)
+    monkeypatch.setattr(api_module, "_stock_research_impl", None)
+    monkeypatch.setattr(api_module, "_stock_demo_research_impl", None)
 
 
 @pytest.fixture
@@ -40,6 +42,58 @@ class FakeReport:
         }
 
 
+class FakeStockResult:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def to_dict(self):
+        return self.payload
+
+
+def stock_payload(*, symbol="NOVA", benchmark="SPY", horizon_days=20, sample_data=False):
+    return {
+        "symbol": symbol,
+        "benchmark": benchmark,
+        "as_of": "2026-07-17",
+        "horizon_days": horizon_days,
+        "opinion": "bullish",
+        "probability_outperform": 0.64,
+        "confidence": "moderate",
+        "sample_data": sample_data,
+        "rationale": [
+            {
+                "feature": "relative_momentum_20d",
+                "label": "20-day relative momentum",
+                "value": 0.081,
+                "direction": "positive",
+                "explanation": "The stock recently outpaced its benchmark.",
+            }
+        ],
+        "limitations": ["Historical relationships may not persist."],
+        "disclaimer": "Research output only; not financial advice.",
+        "model": {
+            "name": "SignalLab gradient boosting ensemble",
+            "version": "1.0",
+            "trained_through": "2024-12-20",
+            "training_rows": 744,
+            "symbols": [symbol, benchmark],
+            "feature_count": 12,
+            "evaluation": {
+                "test_start": "2025-01-02",
+                "test_end": "2026-06-18",
+                "samples": 240,
+                "effective_windows": 12,
+                "accuracy": 0.58,
+                "balanced_accuracy": 0.57,
+                "brier_score": 0.24,
+                "constant_brier": 0.25,
+                "roc_auc": 0.61,
+                "base_rate": 0.51,
+            },
+        },
+    }
+
+
 def test_health_endpoint(client):
     response = client.get("/api/health")
 
@@ -48,6 +102,17 @@ def test_health_endpoint(client):
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["referrer-policy"] == "no-referrer"
     assert "camera=()" in response.headers["permissions-policy"]
+
+
+def test_capabilities_describe_local_only_stock_research(client):
+    response = client.get("/api/capabilities")
+
+    assert response.status_code == 200
+    stocks = response.json()["stock_research"]
+    assert stocks["enabled"] is True
+    assert stocks["local_csv_only"] is True
+    assert stocks["network_fetching"] is False
+    assert stocks["horizon_days"] == {"minimum": 5, "maximum": 60}
 
 
 def test_sync_scanner_runs_outside_the_event_loop_thread():
@@ -206,6 +271,302 @@ def test_source_scan_rejects_missing_target(client, monkeypatch, tmp_path):
     response = client.post("/api/scans/source", json={"path": "missing"})
 
     assert response.status_code == 422
+
+
+def test_stock_analysis_uses_local_csv_and_normalizes_response(client, monkeypatch, tmp_path):
+    observed = {}
+    source_root = tmp_path / "workspace"
+    source_root.mkdir()
+    data_path = source_root / "prices.csv"
+    data_path.write_text("date,symbol,close\n2026-07-17,NOVA,42\n", encoding="utf-8")
+    monkeypatch.setenv("PATCHWORK_WORKSPACE_ROOT", str(source_root))
+
+    def fake_research(path, symbol, **options):
+        observed["path"] = path
+        observed["symbol"] = symbol
+        observed["options"] = options
+        return FakeStockResult(stock_payload(symbol=symbol, benchmark=options["benchmark"]))
+
+    monkeypatch.setattr(api_module, "_stock_research_impl", fake_research)
+    response = client.post(
+        "/api/stocks/analyze",
+        json={
+            "data_path": "prices.csv",
+            "symbol": "nova",
+            "benchmark": "spy",
+            "horizon_days": 20,
+        },
+    )
+
+    assert response.status_code == 200
+    opinion = response.json()
+    assert observed == {
+        "path": data_path.resolve(),
+        "symbol": "NOVA",
+        "options": {"benchmark": "SPY", "horizon_days": 20},
+    }
+    assert len(opinion["id"]) == 36
+    assert opinion["symbol"] == "NOVA"
+    assert opinion["opinion"] == "bullish"
+    assert opinion["probability_outperform"] == 0.64
+    assert opinion["sample_data"] is False
+    assert opinion["model"]["evaluation"]["roc_auc"] == 0.61
+
+
+def test_stock_demo_uses_bundled_research_without_a_request_body(client, monkeypatch):
+    observed = {}
+
+    def fake_demo(symbol, **options):
+        observed["symbol"] = symbol
+        observed["options"] = options
+        return FakeStockResult(
+            stock_payload(
+                symbol=symbol,
+                benchmark=options["benchmark"],
+                horizon_days=options["horizon_days"],
+                sample_data=True,
+            )
+        )
+
+    monkeypatch.setattr(api_module, "_stock_demo_research_impl", fake_demo)
+    response = client.post("/api/stocks/demo")
+
+    assert response.status_code == 200
+    assert observed == {
+        "symbol": "SYNTH_A",
+        "options": {"benchmark": "SYNTH_MKT", "horizon_days": 20},
+    }
+    assert response.json()["sample_data"] is True
+
+
+def test_stock_demo_real_core_satisfies_the_public_contract(client):
+    response = client.post("/api/stocks/demo")
+
+    assert response.status_code == 200
+    opinion = response.json()
+    assert opinion["symbol"] == "SYNTH_A"
+    assert opinion["benchmark"] == "SYNTH_MKT"
+    assert opinion["sample_data"] is True
+    assert opinion["opinion"] in {"bullish", "neutral", "bearish"}
+    assert 0.0 <= opinion["probability_outperform"] <= 1.0
+    assert opinion["symbol"] in opinion["model"]["symbols"]
+    assert opinion["model"]["evaluation"]["constant_brier"] >= 0.0
+    assert opinion["model"]["evaluation"]["effective_windows"] >= 1
+
+
+@pytest.mark.parametrize("horizon_days", [5, 60])
+def test_stock_demo_real_core_supports_public_horizon_bounds(client, horizon_days):
+    response = client.post(
+        "/api/stocks/demo",
+        json={
+            "symbol": "SYNTH_A",
+            "benchmark": "SYNTH_MKT",
+            "horizon_days": horizon_days,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["horizon_days"] == horizon_days
+
+
+def test_stock_contract_accepts_zero_effective_windows_for_a_weak_dataset(
+    client, monkeypatch
+):
+    payload = stock_payload(
+        symbol="SYNTH_A",
+        benchmark="SYNTH_MKT",
+        sample_data=True,
+    )
+    payload["opinion"] = "neutral"
+    payload["confidence"] = "low"
+    payload["model"]["evaluation"]["effective_windows"] = 0
+    monkeypatch.setattr(
+        api_module,
+        "_stock_demo_research_impl",
+        lambda *args, **kwargs: FakeStockResult(payload),
+    )
+
+    response = client.post("/api/stocks/demo")
+
+    assert response.status_code == 200
+    assert response.json()["model"]["evaluation"]["effective_windows"] == 0
+
+
+@pytest.mark.parametrize(
+    ("data_path", "expected_status"),
+    [
+        ("../outside.csv", 403),
+        ("missing.csv", 422),
+        ("prices.txt", 422),
+        ("data", 422),
+    ],
+)
+def test_stock_analysis_rejects_unsafe_or_non_csv_targets(
+    client, monkeypatch, tmp_path, data_path, expected_status
+):
+    source_root = tmp_path / "workspace"
+    source_root.mkdir()
+    (tmp_path / "outside.csv").write_text("private", encoding="utf-8")
+    (source_root / "prices.txt").write_text("not csv", encoding="utf-8")
+    (source_root / "data").mkdir()
+    monkeypatch.setenv("PATCHWORK_WORKSPACE_ROOT", str(source_root))
+    monkeypatch.setattr(
+        api_module,
+        "_stock_research_impl",
+        lambda *args, **kwargs: pytest.fail("unsafe target reached the model"),
+    )
+
+    response = client.post(
+        "/api/stocks/analyze",
+        json={"data_path": data_path, "symbol": "NOVA"},
+    )
+
+    assert response.status_code == expected_status
+
+
+def test_stock_analysis_rejects_unreadable_csv(client, monkeypatch, tmp_path):
+    source_root = tmp_path / "workspace"
+    source_root.mkdir()
+    data_path = source_root / "private.csv"
+    data_path.write_text("secret", encoding="utf-8")
+    monkeypatch.setenv("PATCHWORK_WORKSPACE_ROOT", str(source_root))
+    real_access = api_module.os.access
+    monkeypatch.setattr(
+        api_module.os,
+        "access",
+        lambda path, mode: False if path == data_path.resolve() else real_access(path, mode),
+    )
+
+    response = client.post(
+        "/api/stocks/analyze",
+        json={"data_path": "private.csv", "symbol": "NOVA"},
+    )
+
+    assert response.status_code == 403
+    assert "not readable" in response.json()["detail"].lower()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"data_path": "prices.csv", "symbol": "../../etc/passwd"},
+        {"data_path": "prices.csv", "symbol": "NOVA", "benchmark": "SPY;curl"},
+        {"data_path": "prices.csv", "symbol": "NOVA", "horizon_days": 4},
+        {"data_path": "prices.csv", "symbol": "NOVA", "horizon_days": 61},
+        {"data_path": "prices.csv", "symbol": "NOVA", "api_key": "do-not-accept"},
+    ],
+)
+def test_stock_analysis_rejects_invalid_or_extra_inputs(client, payload):
+    response = client.post("/api/stocks/analyze", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_stock_domain_error_is_safe_and_does_not_leak_secrets(client, monkeypatch, tmp_path):
+    from signallab.errors import DataValidationError
+
+    secret = "private-row-and-provider-token"
+    source_root = tmp_path / "workspace"
+    source_root.mkdir()
+    (source_root / "prices.csv").write_text("date,symbol,close\n", encoding="utf-8")
+    monkeypatch.setenv("PATCHWORK_WORKSPACE_ROOT", str(source_root))
+
+    def invalid_dataset(*args, **kwargs):
+        raise DataValidationError(secret)
+
+    monkeypatch.setattr(api_module, "_stock_research_impl", invalid_dataset)
+    response = client.post(
+        "/api/stocks/analyze",
+        json={"data_path": "prices.csv", "symbol": "NOVA"},
+    )
+
+    assert response.status_code == 422
+    assert secret not in response.text
+    assert "csv contents" in response.json()["detail"].lower()
+
+
+def test_stock_result_serialization_error_is_a_correlated_failure(client, monkeypatch):
+    secret = "serialization-secret"
+
+    class BrokenResult:
+        def to_dict(self):
+            raise ValueError(secret)
+
+    monkeypatch.setattr(
+        api_module,
+        "_stock_demo_research_impl",
+        lambda *args, **kwargs: BrokenResult(),
+    )
+    response = client.post("/api/stocks/demo")
+
+    assert response.status_code == 502
+    assert len(response.headers["x-patchwork-error-id"]) == 32
+    assert secret not in response.text
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        object(),
+        FakeStockResult({}),
+        FakeStockResult({**stock_payload(), "probability_outperform": float("nan")}),
+        FakeStockResult({**stock_payload(), "as_of": "2026-99-99"}),
+        FakeStockResult({**stock_payload(), "unexpected_secret": "must-not-leak"}),
+    ],
+)
+def test_stock_result_contract_fails_closed(client, monkeypatch, result):
+    monkeypatch.setattr(api_module, "_stock_demo_research_impl", lambda *args, **kwargs: result)
+
+    response = client.post("/api/stocks/demo")
+
+    assert response.status_code == 502
+    assert len(response.headers["x-patchwork-error-id"]) == 32
+    assert "must-not-leak" not in response.text
+
+
+@pytest.mark.parametrize(
+    "violation",
+    ["reversed_test", "late_training", "early_opinion", "missing_symbol"],
+)
+def test_stock_result_provenance_fails_closed(client, monkeypatch, violation):
+    payload = stock_payload()
+    evaluation = payload["model"]["evaluation"]
+    if violation == "reversed_test":
+        evaluation["test_start"] = "2026-06-19"
+    elif violation == "late_training":
+        payload["model"]["trained_through"] = evaluation["test_start"]
+    elif violation == "early_opinion":
+        payload["as_of"] = "2025-01-01"
+    else:
+        payload["model"]["symbols"] = ["SPY"]
+    monkeypatch.setattr(
+        api_module,
+        "_stock_demo_research_impl",
+        lambda *args, **kwargs: FakeStockResult(payload),
+    )
+
+    response = client.post("/api/stocks/demo")
+
+    assert response.status_code == 502
+    assert len(response.headers["x-patchwork-error-id"]) == 32
+
+
+def test_unexpected_stock_error_is_correlated_and_not_leaked(client, monkeypatch, caplog):
+    secret = "internal-stock-training-secret"
+
+    def exploding_demo(*args, **kwargs):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(api_module, "_stock_demo_research_impl", exploding_demo)
+    caplog.set_level(logging.ERROR, logger="patchwork_api.app")
+    response = client.post("/api/stocks/demo")
+
+    assert response.status_code == 502
+    error_id = response.headers["x-patchwork-error-id"]
+    assert len(error_id) == 32
+    assert error_id in response.json()["detail"]
+    assert secret not in response.text
+    assert any(error_id in record.getMessage() for record in caplog.records)
 
 
 def test_url_scan_is_delegated_without_an_adapter_network_request(client, monkeypatch):
@@ -368,6 +729,51 @@ def test_scan_capacity_rejects_immediately_without_blocking_health(monkeypatch, 
         assert saturated.status_code == 429
         assert saturated.headers["retry-after"] == "1"
         assert saturated.json()["detail"] == "The scanner is at capacity. Try again shortly."
+        assert health.status_code == 200
+        assert first.result(timeout=5).status_code == 200
+
+
+def test_stock_training_shares_capacity_limit_with_scans(monkeypatch, tmp_path):
+    source_root = tmp_path / "workspace"
+    source_root.mkdir()
+    data_path = source_root / "prices.csv"
+    data_path.write_text("date,symbol,close\n2026-07-17,NOVA,42\n", encoding="utf-8")
+    monkeypatch.setenv("PATCHWORK_WORKSPACE_ROOT", str(source_root))
+    monkeypatch.setenv("PATCHWORK_MAX_CONCURRENT_SCANS", "1")
+    entered = Event()
+    release = Event()
+
+    def blocking_research(path, symbol, **options):
+        entered.set()
+        assert release.wait(timeout=5)
+        return FakeStockResult(stock_payload(symbol=symbol, benchmark=options["benchmark"]))
+
+    monkeypatch.setattr(api_module, "_stock_research_impl", blocking_research)
+    monkeypatch.setattr(
+        api_module,
+        "_scan_source_impl",
+        lambda *args, **kwargs: FakeReport([]),
+    )
+    application = api_module.create_app()
+
+    with ExitStack() as stack:
+        first_client = stack.enter_context(TestClient(application))
+        second_client = stack.enter_context(TestClient(application))
+        executor = stack.enter_context(ThreadPoolExecutor(max_workers=1))
+        first = executor.submit(
+            first_client.post,
+            "/api/stocks/analyze",
+            json={"data_path": "prices.csv", "symbol": "NOVA"},
+        )
+        try:
+            assert entered.wait(timeout=2)
+            saturated = second_client.post("/api/scans/source", json={"path": "."})
+            health = second_client.get("/api/health")
+        finally:
+            release.set()
+
+        assert saturated.status_code == 429
+        assert saturated.headers["retry-after"] == "1"
         assert health.status_code == 200
         assert first.result(timeout=5).status_code == 200
 

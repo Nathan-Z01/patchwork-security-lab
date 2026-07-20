@@ -1,9 +1,16 @@
 import { FormEvent, KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
+  ArrowDown,
   ArrowRight,
+  ArrowUp,
+  Brain,
+  CalendarBlank,
+  ChartLine,
+  ChartLineUp,
   CheckCircle,
   Clock,
   Code,
+  Database,
   DownloadSimple,
   FileText,
   Files,
@@ -13,15 +20,25 @@ import {
   Info,
   LockKey,
   MagnifyingGlass,
+  Minus,
   ShieldCheck,
+  Target,
   TestTube,
   Warning,
   WarningOctagon,
   Wrench,
 } from "@phosphor-icons/react";
-import { downloadExport, scanDemo, scanSource, scanUrl } from "./api";
-import type { ScanResponse, SecurityFinding, Severity } from "./types";
+import { analyzeStock, downloadExport, scanDemo, scanSource, scanUrl, stockDemo } from "./api";
+import type {
+  FactorDirection,
+  ScanResponse,
+  SecurityFinding,
+  Severity,
+  StockAnalysisResponse,
+  StockOpinion,
+} from "./types";
 
+type Product = "sentinel" | "signallab";
 type ScanMode = "source" | "url";
 type ScanOperation = ScanMode | "demo";
 type SeverityFilter = "all" | Severity;
@@ -82,7 +99,37 @@ function displayDuration(durationMs: number): string {
   return `${(durationMs / 1_000).toFixed(1)} s`;
 }
 
-function AppHeader() {
+function AppHeader({
+  product,
+  onProductChange,
+}: {
+  product: Product;
+  onProductChange: (product: Product) => void;
+}) {
+  const sentinelRef = useRef<HTMLButtonElement>(null);
+  const signalLabRef = useRef<HTMLButtonElement>(null);
+
+  const selectProduct = (nextProduct: Product, moveFocus = false) => {
+    onProductChange(nextProduct);
+    if (moveFocus) {
+      (nextProduct === "sentinel" ? sentinelRef.current : signalLabRef.current)?.focus();
+    }
+  };
+
+  const handleProductKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    let nextProduct: Product | null = null;
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      nextProduct = product === "sentinel" ? "signallab" : "sentinel";
+    } else if (event.key === "Home") {
+      nextProduct = "sentinel";
+    } else if (event.key === "End") {
+      nextProduct = "signallab";
+    }
+    if (!nextProduct) return;
+    event.preventDefault();
+    selectProduct(nextProduct, true);
+  };
+
   return (
     <header className="app-header">
       <div className="header-inner">
@@ -95,14 +142,35 @@ function AppHeader() {
             <span>Security Lab</span>
           </span>
         </a>
-        <div className="header-product" aria-label="Current tool">
-          <span>Sentinel</span>
-          <span className="header-divider" aria-hidden="true" />
-          <span className="header-product-label">Security checker</span>
-        </div>
+        <nav className="product-navigation" aria-label="Patchwork tools">
+          <button
+            ref={sentinelRef}
+            type="button"
+            aria-current={product === "sentinel" ? "page" : undefined}
+            onClick={() => selectProduct("sentinel")}
+            onKeyDown={handleProductKeyDown}
+          >
+            <ShieldCheck aria-hidden="true" size={17} weight="duotone" />
+            <span>Sentinel</span>
+          </button>
+          <button
+            ref={signalLabRef}
+            type="button"
+            aria-current={product === "signallab" ? "page" : undefined}
+            onClick={() => selectProduct("signallab")}
+            onKeyDown={handleProductKeyDown}
+          >
+            <ChartLineUp aria-hidden="true" size={17} weight="duotone" />
+            <span>SignalLab</span>
+          </button>
+        </nav>
         <div className="safety-note">
-          <LockKey aria-hidden="true" size={17} weight="duotone" />
-          Passive by default
+          {product === "sentinel" ? (
+            <LockKey aria-hidden="true" size={17} weight="duotone" />
+          ) : (
+            <Info aria-hidden="true" size={17} weight="duotone" />
+          )}
+          {product === "sentinel" ? "Passive by default" : "Research, not advice"}
         </div>
       </div>
     </header>
@@ -796,7 +864,492 @@ function ResultsView({ scan }: { scan: ScanResponse }) {
   );
 }
 
+type StockOperation = "analysis" | "demo";
+
+const opinionLabels: Record<StockOpinion, string> = {
+  bullish: "Bullish",
+  neutral: "Neutral",
+  bearish: "Bearish",
+};
+const tickerPattern = /^[A-Z0-9][A-Z0-9._-]{0,15}$/;
+const syntheticDemoInputs = {
+  symbol: "SYNTH_A",
+  benchmark: "SYNTH_MKT",
+  horizonDays: 20,
+} as const;
+
+function formatPercent(value: number, digits = 1): string {
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
+function formatCount(value: number): string {
+  return new Intl.NumberFormat().format(value);
+}
+
+function formatDateOnly(value: string): string {
+  const date = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeZone: "UTC",
+  }).format(date);
+}
+
+function OpinionGlyph({ opinion, size = 18 }: { opinion: StockOpinion; size?: number }) {
+  if (opinion === "bullish") return <ArrowUp aria-hidden="true" size={size} weight="bold" />;
+  if (opinion === "bearish") return <ArrowDown aria-hidden="true" size={size} weight="bold" />;
+  return <Minus aria-hidden="true" size={size} weight="bold" />;
+}
+
+function DirectionGlyph({ direction }: { direction: FactorDirection }) {
+  if (direction === "positive") return <ArrowUp aria-hidden="true" size={14} weight="bold" />;
+  if (direction === "negative") return <ArrowDown aria-hidden="true" size={14} weight="bold" />;
+  return <Minus aria-hidden="true" size={14} weight="bold" />;
+}
+
+function StockComposer({
+  csvPath,
+  setCsvPath,
+  symbol,
+  setSymbol,
+  benchmark,
+  setBenchmark,
+  horizonDays,
+  setHorizonDays,
+  loading,
+  onSubmit,
+  onDemo,
+  error,
+}: {
+  csvPath: string;
+  setCsvPath: (value: string) => void;
+  symbol: string;
+  setSymbol: (value: string) => void;
+  benchmark: string;
+  setBenchmark: (value: string) => void;
+  horizonDays: number | "";
+  setHorizonDays: (value: number | "") => void;
+  loading: boolean;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onDemo: () => void;
+  error: string | null;
+}) {
+  const csvId = useId();
+  const symbolId = useId();
+  const benchmarkId = useId();
+  const horizonId = useId();
+  const helperId = useId();
+  const errorId = useId();
+
+  return (
+    <section className="stock-composer" aria-labelledby="stock-composer-heading">
+      <div className="composer-heading stock-composer-heading">
+        <div>
+          <h2 id="stock-composer-heading">Analyze price history</h2>
+          <p>Use a server-local CSV, or start with reproducible synthetic data.</p>
+        </div>
+        <button className="button button-secondary" type="button" onClick={onDemo} disabled={loading}>
+          <Flask aria-hidden="true" size={18} />
+          Load synthetic sample
+        </button>
+      </div>
+
+      <form className="stock-form" onSubmit={onSubmit} noValidate>
+        <div className="stock-field stock-field-path">
+          <label htmlFor={csvId}>Server-local CSV path</label>
+          <div className="input-shell">
+            <Database aria-hidden="true" size={19} />
+            <input
+              id={csvId}
+              type="text"
+              value={csvPath}
+              onChange={(event) => setCsvPath(event.target.value)}
+              placeholder="/workspace/data/prices.csv"
+              aria-describedby={`${helperId}${error ? ` ${errorId}` : ""}`}
+              aria-invalid={Boolean(error)}
+              autoComplete="off"
+              spellCheck={false}
+              disabled={loading}
+            />
+          </div>
+        </div>
+
+        <div className="stock-form-row">
+          <div className="stock-field">
+            <label htmlFor={symbolId}>Symbol</label>
+            <input
+              id={symbolId}
+              className="stock-text-input"
+              type="text"
+              value={symbol}
+              onChange={(event) => setSymbol(event.target.value.toUpperCase())}
+              placeholder="AAPL"
+              maxLength={16}
+              autoComplete="off"
+              spellCheck={false}
+              disabled={loading}
+            />
+          </div>
+          <div className="stock-field">
+            <label htmlFor={benchmarkId}>Benchmark</label>
+            <input
+              id={benchmarkId}
+              className="stock-text-input"
+              type="text"
+              value={benchmark}
+              onChange={(event) => setBenchmark(event.target.value.toUpperCase())}
+              placeholder="SPY"
+              maxLength={16}
+              autoComplete="off"
+              spellCheck={false}
+              disabled={loading}
+            />
+          </div>
+          <div className="stock-field">
+            <label htmlFor={horizonId}>Horizon (trading days)</label>
+            <input
+              id={horizonId}
+              className="stock-text-input"
+              type="number"
+              min={5}
+              max={60}
+              step={1}
+              value={horizonDays}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                setHorizonDays(value === "" ? "" : event.currentTarget.valueAsNumber);
+              }}
+              disabled={loading}
+            />
+          </div>
+          <button
+            className="button button-primary stock-analyze-button"
+            type="submit"
+            disabled={loading || !csvPath.trim() || !symbol.trim() || !benchmark.trim()}
+          >
+            {loading ? "Analyzing..." : "Analyze"}
+            {!loading && <ArrowRight aria-hidden="true" size={18} weight="bold" />}
+          </button>
+        </div>
+
+        <p id={helperId} className="field-helper stock-helper">
+          The API reads the path on the server. The model estimates relative performance against {benchmark || "the benchmark"}; it does not predict a guaranteed return.
+        </p>
+        {error && (
+          <p id={errorId} className="field-error" role="alert">
+            <WarningOctagon aria-hidden="true" size={17} weight="fill" />
+            {error} {" "}
+            <span>{"A previous result remains below when available."}</span>
+          </p>
+        )}
+      </form>
+    </section>
+  );
+}
+
+function StockLoadingState({ operation }: { operation: StockOperation }) {
+  return (
+    <section className="loading-state stock-loading" aria-live="polite" aria-busy="true">
+      <div className="loading-copy">
+        <span className="loading-icon" aria-hidden="true">
+          <Brain size={22} weight="duotone" />
+        </span>
+        <div>
+          <h2>{operation === "demo" ? "Preparing synthetic research" : "Evaluating market factors"}</h2>
+          <p>Training evidence and held-out metrics will be shown with the opinion.</p>
+        </div>
+      </div>
+      <div className="stock-skeleton" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+        <span />
+        <span />
+      </div>
+    </section>
+  );
+}
+
+function StockIdleState({ onDemo }: { onDemo: () => void }) {
+  return (
+    <section className="stock-idle" aria-labelledby="stock-idle-heading">
+      <div className="idle-icon" aria-hidden="true">
+        <ChartLine size={30} weight="duotone" />
+      </div>
+      <div className="idle-content">
+        <h2 id="stock-idle-heading">An opinion you can inspect</h2>
+        <p>
+          SignalLab reports an outperformance probability, the factors behind it, and held-out test metrics so you can judge the model—not just its label.
+        </p>
+        <button className="text-button" type="button" onClick={onDemo}>
+          Explore synthetic sample data
+          <ArrowRight aria-hidden="true" size={17} weight="bold" />
+        </button>
+      </div>
+      <div className="research-sequence" aria-label="Research output includes">
+        <span><Target aria-hidden="true" size={19} />Probability</span>
+        <span><Brain aria-hidden="true" size={19} />Factor evidence</span>
+        <span><ChartLine aria-hidden="true" size={19} />Held-out metrics</span>
+      </div>
+    </section>
+  );
+}
+
+function StockAnalysisView({ analysis }: { analysis: StockAnalysisResponse }) {
+  const evaluation = analysis.model.evaluation;
+  const metrics = [
+    { label: "Accuracy", value: formatPercent(evaluation.accuracy) },
+    { label: "Balanced accuracy", value: formatPercent(evaluation.balanced_accuracy) },
+    { label: "ROC AUC", value: evaluation.roc_auc == null ? "Unavailable" : evaluation.roc_auc.toFixed(3) },
+    { label: "Brier score", value: evaluation.brier_score.toFixed(3) },
+    { label: "Constant baseline", value: evaluation.constant_brier.toFixed(3) },
+    { label: "Positive base rate", value: formatPercent(evaluation.base_rate) },
+    { label: "Effective windows", value: formatCount(evaluation.effective_windows) },
+  ];
+
+  return (
+    <section className="stock-results" aria-labelledby="stock-results-heading">
+      <header className="stock-result-header">
+        <div>
+          <div className="stock-result-title-line">
+            <h2 id="stock-results-heading" tabIndex={-1}>Research opinion for {analysis.symbol}</h2>
+            {analysis.sample_data && <span className="sample-label">Synthetic sample</span>}
+          </div>
+          <p>
+            Compared with {analysis.benchmark} over {analysis.horizon_days} trading days, using data through {formatDateOnly(analysis.as_of)}.
+          </p>
+        </div>
+        <span className="analysis-id">Analysis {analysis.id}</span>
+      </header>
+
+      <div className="investment-disclaimer" role="note" aria-label="Investment disclaimer">
+        <Warning aria-hidden="true" size={21} weight="fill" />
+        <div>
+          <strong>Research output—not financial advice</strong>
+          <p>{analysis.disclaimer}</p>
+        </div>
+      </div>
+
+      <div className="opinion-overview">
+        <div className={`opinion-block opinion-${analysis.opinion}`}>
+          <span className="opinion-label"><OpinionGlyph opinion={analysis.opinion} />Model opinion</span>
+          <strong>{opinionLabels[analysis.opinion]}</strong>
+          <span>{analysis.confidence} evidence strength</span>
+        </div>
+        <div className="probability-block">
+          <span>Estimated probability of outperforming {analysis.benchmark}</span>
+          <strong>{formatPercent(analysis.probability_outperform)}</strong>
+          <p>Calibrated model estimate for the stated horizon, not a promised outcome.</p>
+        </div>
+        <dl className="research-context">
+          <div>
+            <dt><CalendarBlank aria-hidden="true" size={15} />As of</dt>
+            <dd>{formatDateOnly(analysis.as_of)}</dd>
+          </div>
+          <div>
+            <dt><Target aria-hidden="true" size={15} />Horizon</dt>
+            <dd>{analysis.horizon_days} trading days</dd>
+          </div>
+          <div>
+            <dt><ChartLine aria-hidden="true" size={15} />Benchmark</dt>
+            <dd>{analysis.benchmark}</dd>
+          </div>
+        </dl>
+      </div>
+
+      <div className="stock-result-section factor-section">
+        <div className="stock-section-heading">
+          <div>
+            <h3>Factor evidence</h3>
+            <p>Inputs that influenced this specific opinion. Direction is always written, not communicated by color alone.</p>
+          </div>
+          <span>{analysis.rationale.length} factors</span>
+        </div>
+        {analysis.rationale.length > 0 ? (
+          <ol className="factor-list">
+            {analysis.rationale.map((factor) => (
+              <li key={factor.feature}>
+                <div className="factor-name">
+                  <strong>{factor.label}</strong>
+                  <code>{factor.feature}</code>
+                </div>
+                <span className="factor-value">{factor.value.toFixed(4)}</span>
+                <span className={`direction-label direction-${factor.direction}`}>
+                  <DirectionGlyph direction={factor.direction} />
+                  {factor.direction}
+                </span>
+                <p>{factor.explanation}</p>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="stock-empty-copy">No factor rationale was returned for this analysis.</p>
+        )}
+      </div>
+
+      <div className="stock-result-section model-section">
+        <div className="stock-section-heading">
+          <div>
+            <h3>Held-out test evaluation</h3>
+            <p>These metrics do not fit the model or calibrate its probabilities; they conservatively gate how the opinion is presented.</p>
+          </div>
+          <span>{formatCount(evaluation.samples)} labeled rows</span>
+        </div>
+        <dl className="evaluation-metrics" aria-label="Held-out model metrics">
+          {metrics.map((metric) => (
+            <div key={metric.label}>
+              <dt>{metric.label}</dt>
+              <dd>{metric.value}</dd>
+            </div>
+          ))}
+        </dl>
+        <div className="model-provenance">
+          <div>
+            <span>Test period</span>
+            <strong>{formatDateOnly(evaluation.test_start)} – {formatDateOnly(evaluation.test_end)}</strong>
+          </div>
+          <div>
+            <span>Model</span>
+            <strong>{analysis.model.name} v{analysis.model.version}</strong>
+          </div>
+          <div>
+            <span>Training cutoff</span>
+            <strong>{formatDateOnly(analysis.model.trained_through)}</strong>
+          </div>
+          <div>
+            <span>Training scope</span>
+            <strong>{formatCount(analysis.model.training_rows)} rows · {analysis.model.feature_count} features</strong>
+          </div>
+          <div className="model-symbols">
+            <span>Training symbols</span>
+            <strong>{analysis.model.symbols.join(", ")}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div className="stock-result-section limitation-section">
+        <h3>Limitations to consider</h3>
+        {analysis.limitations.length > 0 ? (
+          <ul>
+            {analysis.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}
+          </ul>
+        ) : (
+          <p>No additional limitations were returned. General model and market uncertainty still apply.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SignalLab() {
+  const [csvPath, setCsvPath] = useState("");
+  const [symbol, setSymbol] = useState("STOCK");
+  const [benchmark, setBenchmark] = useState("SPY");
+  const [horizonDays, setHorizonDays] = useState<number | "">(20);
+  const [activeOperation, setActiveOperation] = useState<StockOperation | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [analysis, setAnalysis] = useState<StockAnalysisResponse | null>(null);
+
+  const loading = activeOperation !== null;
+  const normalizedInputs = () => ({
+    symbol: symbol.trim().toUpperCase(),
+    benchmark: benchmark.trim().toUpperCase(),
+    horizonDays: Number(horizonDays),
+  });
+
+  const runAnalysis = async (
+    kind: StockOperation,
+    operation: () => Promise<StockAnalysisResponse>,
+  ) => {
+    setActiveOperation(kind);
+    setError(null);
+    try {
+      const result = await operation();
+      setAnalysis(result);
+      requestAnimationFrame(() => {
+        const heading = document.getElementById("stock-results-heading");
+        const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        heading?.focus({ preventScroll: true });
+        heading?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+      });
+    } catch (analysisError) {
+      setError(analysisError instanceof Error ? analysisError.message : "The stock analysis could not be completed.");
+    } finally {
+      setActiveOperation(null);
+    }
+  };
+
+  const validateInputs = (requirePath: boolean): boolean => {
+    if (requirePath && !csvPath.trim()) {
+      setError("Enter a server-local CSV path.");
+      return false;
+    }
+    const normalizedSymbol = symbol.trim().toUpperCase();
+    const normalizedBenchmark = benchmark.trim().toUpperCase();
+    if (!tickerPattern.test(normalizedSymbol) || !tickerPattern.test(normalizedBenchmark)) {
+      setError("Use a 1–16 character ticker with letters, numbers, dots, underscores, or hyphens.");
+      return false;
+    }
+    const parsedHorizon = Number(horizonDays);
+    if (!Number.isInteger(parsedHorizon) || parsedHorizon < 5 || parsedHorizon > 60) {
+      setError("Choose a horizon from 5 to 60 trading days.");
+      return false;
+    }
+    return true;
+  };
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!validateInputs(true)) return;
+    void runAnalysis("analysis", () => analyzeStock({ csvPath: csvPath.trim(), ...normalizedInputs() }));
+  };
+
+  const handleDemo = () => {
+    void runAnalysis("demo", () => stockDemo(syntheticDemoInputs));
+  };
+
+  return (
+    <>
+      <section className="page-intro stock-intro" aria-labelledby="page-title">
+        <div>
+          <p className="product-kicker">Transparent ML stock research</p>
+          <h1 id="page-title">Inspect the opinion, evidence, and test.</h1>
+          <p>Estimate relative performance with calibrated probabilities, factor-level rationale, and visible held-out evaluation.</p>
+        </div>
+        <div className="review-boundary" role="note" aria-label="Research boundary">
+          <Info aria-hidden="true" size={21} weight="duotone" />
+          <p><strong>Decision support</strong> Historical patterns can fail when markets change. SignalLab does not provide investment advice.</p>
+        </div>
+      </section>
+
+      <StockComposer
+        csvPath={csvPath}
+        setCsvPath={setCsvPath}
+        symbol={symbol}
+        setSymbol={setSymbol}
+        benchmark={benchmark}
+        setBenchmark={setBenchmark}
+        horizonDays={horizonDays}
+        setHorizonDays={setHorizonDays}
+        loading={loading}
+        onSubmit={handleSubmit}
+        onDemo={handleDemo}
+        error={error}
+      />
+
+      {activeOperation ? (
+        <StockLoadingState operation={activeOperation} />
+      ) : analysis ? (
+        <StockAnalysisView analysis={analysis} />
+      ) : (
+        <StockIdleState onDemo={handleDemo} />
+      )}
+    </>
+  );
+}
+
 export function App() {
+  const [product, setProduct] = useState<Product>("sentinel");
   const [mode, setMode] = useState<ScanMode>("source");
   const [targets, setTargets] = useState<Record<ScanMode, string>>({ source: ".", url: "" });
   const [activeOperation, setActiveOperation] = useState<ScanOperation | null>(null);
@@ -841,44 +1394,54 @@ export function App() {
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">Skip to main content</a>
-      <AppHeader />
+      <AppHeader product={product} onProductChange={setProduct} />
       <main id="main-content" className="main-content">
-        <section className="page-intro" aria-labelledby="page-title">
-          <div>
-            <p className="product-kicker">AI application security review</p>
-            <h1 id="page-title">Trace every finding to evidence.</h1>
-            <p>Review source code and public website surfaces with clear uncertainty, remediation, and verification steps.</p>
-          </div>
-          <div className="review-boundary" role="note" aria-label="Review boundary">
-            <ShieldCheck aria-hidden="true" size={21} weight="duotone" />
-            <p><strong>Decision support</strong> Automated checks help prioritize review. They do not replace a penetration test.</p>
-          </div>
-        </section>
+        {product === "sentinel" ? (
+          <>
+            <section className="page-intro" aria-labelledby="page-title">
+              <div>
+                <p className="product-kicker">AI application security review</p>
+                <h1 id="page-title">Trace every finding to evidence.</h1>
+                <p>Review source code and public website surfaces with clear uncertainty, remediation, and verification steps.</p>
+              </div>
+              <div className="review-boundary" role="note" aria-label="Review boundary">
+                <ShieldCheck aria-hidden="true" size={21} weight="duotone" />
+                <p><strong>Decision support</strong> Automated checks help prioritize review. They do not replace a penetration test.</p>
+              </div>
+            </section>
 
-        <ScanComposer
-          mode={mode}
-          setMode={(nextMode) => {
-            setMode(nextMode);
-            setError(null);
-          }}
-          target={target}
-          setTarget={setTarget}
-          loading={loading}
-          onSubmit={handleSubmit}
-          onDemo={handleDemo}
-          error={error}
-        />
+            <ScanComposer
+              mode={mode}
+              setMode={(nextMode) => {
+                setMode(nextMode);
+                setError(null);
+              }}
+              target={target}
+              setTarget={setTarget}
+              loading={loading}
+              onSubmit={handleSubmit}
+              onDemo={handleDemo}
+              error={error}
+            />
 
-        {activeOperation ? (
-          <LoadingState operation={activeOperation} />
-        ) : scan ? (
-          <ResultsView scan={scan} />
+            {activeOperation ? (
+              <LoadingState operation={activeOperation} />
+            ) : scan ? (
+              <ResultsView scan={scan} />
+            ) : (
+              <IdleState onDemo={handleDemo} />
+            )}
+          </>
         ) : (
-          <IdleState onDemo={handleDemo} />
+          <SignalLab />
         )}
       </main>
       <footer className="app-footer">
-        <p>Patchwork Sentinel performs bounded, read-only checks and reports uncertainty honestly.</p>
+        <p>
+          {product === "sentinel"
+            ? "Patchwork Sentinel performs bounded, read-only checks and reports uncertainty honestly."
+            : "Patchwork SignalLab reports probabilistic research with model evidence and explicit limitations."}
+        </p>
         <a href="/docs">API documentation</a>
       </footer>
     </div>

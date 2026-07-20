@@ -3,20 +3,27 @@
 [![CI](https://github.com/Nathan-Z01/patchwork-security-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/Nathan-Z01/patchwork-security-lab/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-0f172a.svg)](LICENSE)
 
-Reproducible code-repair benchmarks and evidence-first AI security scanning,
-packaged as one portfolio-grade open-source monorepo.
+Reproducible code-repair benchmarks, evidence-first AI security scanning, and
+transparent machine-learning stock research, packaged as one portfolio-grade
+open-source monorepo.
 
-Patchwork contains two independent tools:
+Patchwork contains three independent tools:
 
 - **FreshPatch** turns real bug-fix commits into versioned, executable repair
   tasks and evaluates candidate patches inside constrained containers.
 - **AI Security Checker** scans source repositories and public website surfaces
   for AI-specific security mistakes, unsafe data flows, exposed secrets, and
   missing browser defenses. It exports JSON, HTML, and GitHub-compatible SARIF.
+- **SignalLab** trains a dependency-free ensemble on point-in-time market
+  features and produces a calibrated Bullish, Neutral, or Bearish research
+  opinion relative to a benchmark. Every opinion includes factor evidence,
+  chronological holdout metrics, limitations, and model provenance.
 
 The project is defensive by design. URL checks are passive and bounded; private
 network targets are rejected. Findings include evidence, confidence, impact,
-and remediation rather than an opaque score.
+and remediation rather than an opaque score. Market research is local-data-only,
+reproducible, and paired with holdout evidence rather than guaranteed-return
+language.
 
 ## Quick start
 
@@ -38,7 +45,7 @@ Run `uv run patchwork-api --help` to see the server CLI and its bind options.
 For installation, dashboard, CLI, API, FreshPatch, Docker, CI, and
 troubleshooting instructions, see the **[complete user guide](docs/USER_GUIDE.md)**.
 If `make` reports `getcwd: Operation not permitted` or cannot find the `dev`
-target, start with the guide's [troubleshooting section](docs/USER_GUIDE.md#8-troubleshooting).
+target, start with the guide's [troubleshooting section](docs/USER_GUIDE.md#9-troubleshooting).
 
 Run the scanners directly:
 
@@ -49,6 +56,24 @@ uv run aisec source . --format sarif --output reports/local/self-scan.sarif
 uv run aisec url https://example.com --format html --output reports/local/example.html
 uv run freshpatch --help
 ```
+
+Train and inspect the stock-research model with deterministic synthetic data:
+
+```bash
+uv run signallab demo-data /tmp/signallab-demo.csv --rows 700
+uv run signallab train /tmp/signallab-demo.csv \
+  --output /tmp/signallab-model.json \
+  --benchmark SYNTH_MKT \
+  --horizon-days 20
+uv run signallab analyze /tmp/signallab-demo.csv SYNTH_A \
+  --artifact /tmp/signallab-model.json \
+  --benchmark SYNTH_MKT \
+  --sample-data
+```
+
+The demonstration contains no real market observations. For the exact target,
+features, data contract, leakage controls, evaluation, limitations, and
+responsible retraining workflow, read the [SignalLab model card](docs/signallab/README.md).
 
 Build and validate the deterministic offline repair fixture:
 
@@ -85,6 +110,13 @@ The technical work is inspectable and testable:
   protected even if the reference commit changed them.
 - The benchmark runner produces machine-readable results and distinguishes
   failed tests from evaluator errors and timeouts.
+- SignalLab purges overlapping forward labels at chronological split boundaries,
+  fits preprocessing on training data only, calibrates on validation data, and
+  reports a held-out test period that is not used for fitting instead of an
+  in-sample accuracy claim.
+- SignalLab artifacts are strict, versioned JSON rather than executable pickle
+  files, so their inputs, features, parameters, cutoff, and evaluation remain
+  inspectable.
 
 ## Repository map
 
@@ -92,6 +124,7 @@ The technical work is inspectable and testable:
 apps/dashboard/       React + TypeScript review interface
 src/aisec/            Source and passive URL security scanner
 src/freshpatch/       Repair-task builder and evaluator
+src/signallab/        Trainable stock-research model and safe JSON artifacts
 src/patchwork_api/    Local FastAPI service
 examples/             Safe demonstration fixtures
 tests/                Python and API test suites
@@ -101,8 +134,10 @@ docs/                 Architecture, methodology, and threat model
 ## Safety and authorization
 
 Only scan systems you own or are authorized to assess. AI Security Checker is a
-review assistant, not a penetration test or a guarantee of safety. See
-[SECURITY.md](SECURITY.md) and [the threat model](docs/threat-model.md).
+review assistant, not a penetration test or a guarantee of safety. SignalLab is
+an educational research system—not financial advice or a recommendation—and
+its output can be wrong. See [SECURITY.md](SECURITY.md) and
+[the threat model](docs/threat-model.md).
 
 FreshPatch treats benchmark repositories as untrusted. Its default execution
 backend requires Docker and applies network, capability, process, CPU, and
@@ -118,9 +153,10 @@ every sensitive or transformed value; review artifacts before publishing them.
 ## Evaluation philosophy
 
 Every rule needs a vulnerable fixture and a safe fixture. Every benchmark task
-must be reconstructable from recorded inputs. Reports preserve scanner version,
-timestamp, target metadata, rule identifiers, and evidence so results can be
-reviewed and compared without relying on screenshots.
+must be reconstructable from recorded inputs. Every model result must disclose
+its data cutoff, split, baseline, and untouched holdout metrics. Reports preserve
+versions, target metadata, identifiers, and evidence so results can be reviewed
+and compared without relying on screenshots.
 
 See [FreshPatch methodology](docs/benchmark-methodology.md) for the task and
 result model.

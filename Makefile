@@ -3,13 +3,14 @@ VENV_BIN := $(PROJECT_ROOT)/.venv/bin
 DASHBOARD_DIR := $(PROJECT_ROOT)/apps/dashboard
 UV_CACHE_DIR ?= $(PROJECT_ROOT)/.cache/uv
 PATCHWORK_PORT ?= 8765
+SIGNALLAB_DEMO_DIR := $(PROJECT_ROOT)/reports/local/signallab
 export UV_CACHE_DIR
 export PATCHWORK_PORT
 
 .DEFAULT_GOAL := help
 
 .PHONY: help doctor check-prereqs check-web-prereqs check-dev setup test lint \
-	typecheck web-install web-build release-build dev scan-self clean
+	typecheck web-install web-build release-build dev scan-self stock-demo clean
 
 help:
 	@echo "Patchwork Security Lab"
@@ -22,6 +23,7 @@ help:
 	@echo "  make web-build   Rebuild and package the dashboard"
 	@echo "  make release-build  Build clean source and wheel distributions"
 	@echo "  make scan-self   Write a local HTML security report"
+	@echo "  make stock-demo  Train and inspect the offline synthetic stock model"
 	@echo "  make doctor      Show environment and repository diagnostics"
 
 doctor:
@@ -80,6 +82,13 @@ dev: check-dev
 
 scan-self:
 	"$(VENV_BIN)/aisec" source "$(PROJECT_ROOT)" --format html --output "$(PROJECT_ROOT)/reports/local/self-scan.html"
+
+stock-demo: check-dev
+	@test -x "$(VENV_BIN)/signallab" || { echo "Error: SignalLab is not installed. Run 'make setup' first."; exit 1; }
+	mkdir -p "$(SIGNALLAB_DEMO_DIR)"
+	"$(VENV_BIN)/signallab" demo-data "$(SIGNALLAB_DEMO_DIR)/market.csv" --rows 700 --force
+	"$(VENV_BIN)/signallab" train "$(SIGNALLAB_DEMO_DIR)/market.csv" --output "$(SIGNALLAB_DEMO_DIR)/model.json" --benchmark SYNTH_MKT --horizon-days 20
+	"$(VENV_BIN)/signallab" analyze "$(SIGNALLAB_DEMO_DIR)/market.csv" SYNTH_A --artifact "$(SIGNALLAB_DEMO_DIR)/model.json" --benchmark SYNTH_MKT --sample-data
 
 clean:
 	python3 "$(PROJECT_ROOT)/scripts/clean.py"

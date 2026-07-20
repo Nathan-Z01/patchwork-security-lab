@@ -1,4 +1,9 @@
-import type { ScanResponse } from "./types";
+import type {
+  ScanResponse,
+  StockAnalysisRequest,
+  StockAnalysisResponse,
+  StockDemoRequest,
+} from "./types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
@@ -31,7 +36,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const detail = Array.isArray(body.detail)
       ? body.detail.map((item) => item.msg).filter(Boolean).join(" ")
       : body.detail;
-    throw new Error(detail || `The scan request failed with status ${response.status}.`);
+    throw new Error(detail || `The request failed with status ${response.status}.`);
   }
 
   return (await response.json()) as T;
@@ -53,6 +58,29 @@ export function scanUrl(url: string): Promise<ScanResponse> {
 
 export function scanDemo(): Promise<ScanResponse> {
   return request<ScanResponse>("/api/scans/demo", { method: "POST" });
+}
+
+export function analyzeStock(input: StockAnalysisRequest): Promise<StockAnalysisResponse> {
+  return request<StockAnalysisResponse>("/api/stocks/analyze", {
+    method: "POST",
+    body: JSON.stringify({
+      data_path: input.csvPath,
+      symbol: input.symbol,
+      benchmark: input.benchmark,
+      horizon_days: input.horizonDays,
+    }),
+  });
+}
+
+export function stockDemo(input: StockDemoRequest): Promise<StockAnalysisResponse> {
+  return request<StockAnalysisResponse>("/api/stocks/demo", {
+    method: "POST",
+    body: JSON.stringify({
+      symbol: input.symbol,
+      benchmark: input.benchmark,
+      horizon_days: input.horizonDays,
+    }),
+  });
 }
 
 export async function downloadExport(scanId: string, format: "json" | "sarif"): Promise<void> {

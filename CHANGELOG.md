@@ -2,6 +2,35 @@
 
 All notable changes to Patchwork Security Lab are documented here.
 
+## 0.2.0 — 2026-07-19
+
+### SignalLab
+
+- Added strict, bounded long-format OHLCV ingestion and point-in-time technical,
+  relative-momentum, volatility, volume, drawdown, and beta features.
+- Added a deterministic, dependency-free ensemble of regularized logistic
+  regression and gradient-boosted decision stumps for predicting forward excess
+  performance relative to a benchmark.
+- Added purged chronological train, validation, and held-out test periods,
+  validation-only blending and calibration, constant-baseline comparison, and
+  accuracy, balanced-accuracy, Brier-score, ROC-AUC, and horizon-aware effective
+  window evidence.
+- Added strict versioned JSON model artifacts with data digests, feature schema,
+  training cutoff, split provenance, model parameters, and evaluation metrics.
+- Added a SignalLab CLI, local API endpoints, deterministic synthetic demo, and
+  accessible dashboard workspace with factor explanations and explicit model
+  limitations.
+- Added defensive limits for data files and artifacts, finite-number validation,
+  non-executable serialization, and research-only disclosures throughout the
+  interface and documentation.
+
+### Product integration
+
+- Added a top-level dashboard workspace switch while preserving the existing
+  Sentinel source and public-website review flows.
+- Extended Python 3.9/3.12, dashboard, wheel, and container checks to cover the
+  model and its packaged interface.
+
 ## 0.1.0 — 2026-07-18
 
 Initial public release.

@@ -12,3 +12,12 @@ Contributions are welcome through focused issues and pull requests.
 Security rules must include a vulnerable fixture, a safe fixture, remediation,
 confidence, and a stable identifier. Benchmark changes must preserve task
 reproducibility and record any migration in the task schema version.
+
+SignalLab changes must preserve point-in-time feature construction and
+chronological split purging. Include deterministic tests for leakage boundaries,
+artifact validation, probability bounds, and malformed data. Compare model
+changes against the recorded constant-probability baseline on a held-out test
+period; do not select features, thresholds, or hyperparameters using that period.
+Any schema or feature-contract change requires a version change and documented
+migration. Do not add claims of guaranteed performance or personalized trading
+advice.

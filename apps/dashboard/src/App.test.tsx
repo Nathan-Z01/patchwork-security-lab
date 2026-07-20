@@ -3,19 +3,28 @@ import userEvent from "@testing-library/user-event";
 import { axe } from "jest-axe";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import { downloadExport, scanDemo, scanSource } from "./api";
-import type { ScanResponse, SecurityFinding, Severity } from "./types";
+import { analyzeStock, downloadExport, scanDemo, scanSource, stockDemo } from "./api";
+import type {
+  ScanResponse,
+  SecurityFinding,
+  Severity,
+  StockAnalysisResponse,
+} from "./types";
 
 vi.mock("./api", () => ({
+  analyzeStock: vi.fn(),
   downloadExport: vi.fn(),
   scanDemo: vi.fn(),
   scanSource: vi.fn(),
   scanUrl: vi.fn(),
+  stockDemo: vi.fn(),
 }));
 
+const mockedAnalyzeStock = vi.mocked(analyzeStock);
 const mockedDownloadExport = vi.mocked(downloadExport);
 const mockedScanDemo = vi.mocked(scanDemo);
 const mockedScanSource = vi.mocked(scanSource);
+const mockedStockDemo = vi.mocked(stockDemo);
 
 const severityValues: Severity[] = ["critical", "high", "medium", "low", "info"];
 
@@ -73,6 +82,59 @@ function scanResponse(
     findings,
     limitations: [],
     metadata: {},
+    ...overrides,
+  };
+}
+
+function stockResponse(overrides: Partial<StockAnalysisResponse> = {}): StockAnalysisResponse {
+  return {
+    id: "stock-analysis-1",
+    symbol: "SYNTH_A",
+    benchmark: "SYNTH_MKT",
+    as_of: "2026-06-30",
+    horizon_days: 20,
+    opinion: "bullish",
+    probability_outperform: 0.637,
+    confidence: "moderate",
+    sample_data: false,
+    rationale: [
+      {
+        feature: "relative_momentum_20d",
+        label: "Relative momentum",
+        value: 0.0472,
+        direction: "positive",
+        explanation: "The symbol recently outpaced its benchmark over the feature window.",
+      },
+      {
+        feature: "volatility_20d",
+        label: "Recent volatility",
+        value: 0.212,
+        direction: "negative",
+        explanation: "Higher recent variability reduced the model estimate.",
+      },
+    ],
+    limitations: ["Regime changes may make historical relationships unreliable."],
+    disclaimer: "This experimental output is for research and education only. It is not financial advice.",
+    model: {
+      name: "SignalLab Gradient Boosting",
+      version: "1.0.0",
+      trained_through: "2025-12-31",
+      training_rows: 12_400,
+      symbols: ["SYNTH_A", "SYNTH_B"],
+      feature_count: 9,
+      evaluation: {
+        test_start: "2026-01-01",
+        test_end: "2026-06-30",
+        samples: 842,
+        effective_windows: 21,
+        accuracy: 0.581,
+        balanced_accuracy: 0.566,
+        brier_score: 0.238,
+        constant_brier: 0.25,
+        roc_auc: 0.604,
+        base_rate: 0.492,
+      },
+    },
     ...overrides,
   };
 }
@@ -243,6 +305,122 @@ describe("Sentinel dashboard", () => {
     expect((await axe(container)).violations).toEqual([]);
     await user.click(screen.getByRole("button", { name: "Load sample" }));
     await screen.findByRole("heading", { name: "Review results" });
+    expect((await axe(container)).violations).toEqual([]);
+  });
+});
+
+describe("SignalLab dashboard", () => {
+  it("exposes SignalLab as a top-level keyboard-navigable product and keeps stock modes out of Sentinel tabs", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const sentinel = screen.getByRole("button", { name: "Sentinel" });
+    const signalLab = screen.getByRole("button", { name: "SignalLab" });
+    expect(sentinel).toHaveAttribute("aria-current", "page");
+    expect(screen.getAllByRole("tab")).toHaveLength(2);
+
+    sentinel.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(signalLab).toHaveFocus();
+    expect(signalLab).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "Inspect the opinion, evidence, and test." })).toBeInTheDocument();
+    expect(screen.queryAllByRole("tab")).toHaveLength(0);
+    expect(screen.getByRole("textbox", { name: "Benchmark" })).toHaveValue("SPY");
+    expect(screen.getByRole("textbox", { name: "Symbol" })).toHaveValue("STOCK");
+    expect(screen.getByRole("spinbutton", { name: "Horizon (trading days)" })).toHaveValue(20);
+
+    await user.keyboard("{Home}");
+    expect(sentinel).toHaveFocus();
+    expect(screen.getByRole("heading", { name: "Trace every finding to evidence." })).toBeInTheDocument();
+
+    await user.keyboard("{End}");
+    expect(signalLab).toHaveFocus();
+    expect(screen.getByRole("heading", { name: "Analyze price history" })).toBeInTheDocument();
+  });
+
+  it("submits a server-local CSV and presents transparent opinion evidence and untouched metrics", async () => {
+    const user = userEvent.setup();
+    let completeAnalysis!: (analysis: StockAnalysisResponse) => void;
+    mockedAnalyzeStock.mockReturnValue(
+      new Promise((resolve) => {
+        completeAnalysis = resolve;
+      }),
+    );
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "SignalLab" }));
+    await user.type(screen.getByRole("textbox", { name: "Server-local CSV path" }), "/workspace/data/prices.csv");
+    await user.clear(screen.getByRole("textbox", { name: "Symbol" }));
+    await user.type(screen.getByRole("textbox", { name: "Symbol" }), "msft");
+    await user.click(screen.getByRole("button", { name: "Analyze" }));
+
+    expect(mockedAnalyzeStock).toHaveBeenCalledWith({
+      csvPath: "/workspace/data/prices.csv",
+      symbol: "MSFT",
+      benchmark: "SPY",
+      horizonDays: 20,
+    });
+    expect(screen.getByRole("heading", { name: "Evaluating market factors" })).toBeInTheDocument();
+
+    await act(async () => completeAnalysis(stockResponse({ symbol: "MSFT", benchmark: "SPY" })));
+    expect(await screen.findByRole("heading", { name: "Research opinion for MSFT" })).toBeInTheDocument();
+    expect(screen.getByText("Bullish")).toBeInTheDocument();
+    expect(screen.getByText("63.7%")).toBeInTheDocument();
+    expect(screen.getByText("moderate evidence strength")).toBeInTheDocument();
+    expect(screen.getByText("Relative momentum")).toBeInTheDocument();
+    expect(screen.getByText("positive")).toBeInTheDocument();
+    expect(screen.getByText("Balanced accuracy").nextSibling).toHaveTextContent("56.6%");
+    expect(screen.getByText("ROC AUC").nextSibling).toHaveTextContent("0.604");
+    expect(screen.getByText("Constant baseline").nextSibling).toHaveTextContent("0.250");
+    expect(screen.getByText("Effective windows").nextSibling).toHaveTextContent("21");
+    expect(screen.getByText("Regime changes may make historical relationships unreliable.")).toBeInTheDocument();
+    expect(screen.getByRole("note", { name: "Investment disclaimer" })).toHaveTextContent("not financial advice");
+  });
+
+  it("loads the synthetic sample separately and labels it without pretending it is live market evidence", async () => {
+    const user = userEvent.setup();
+    mockedStockDemo.mockResolvedValue(stockResponse({ sample_data: true }));
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "SignalLab" }));
+    await user.click(screen.getByRole("button", { name: "Load synthetic sample" }));
+
+    expect(mockedStockDemo).toHaveBeenCalledWith({
+      symbol: "SYNTH_A",
+      benchmark: "SYNTH_MKT",
+      horizonDays: 20,
+    });
+    expect(await screen.findByText("Synthetic sample")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Research opinion for SYNTH_A" })).toBeInTheDocument();
+  });
+
+  it("keeps the prior analysis visible and announces an inline error when a refresh fails", async () => {
+    const user = userEvent.setup();
+    mockedStockDemo.mockResolvedValue(stockResponse());
+    mockedAnalyzeStock.mockRejectedValue(new Error("The CSV could not be read by the server."));
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "SignalLab" }));
+    await user.click(screen.getByRole("button", { name: "Load synthetic sample" }));
+    expect(await screen.findByRole("heading", { name: "Research opinion for SYNTH_A" })).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox", { name: "Server-local CSV path" }), "/workspace/missing.csv");
+    await user.click(screen.getByRole("button", { name: "Analyze" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("The CSV could not be read by the server.");
+    expect(screen.getByRole("heading", { name: "Research opinion for SYNTH_A" })).toBeInTheDocument();
+    expect(screen.getByText("63.7%")).toBeInTheDocument();
+  });
+
+  it("has no detectable axe violations in SignalLab form and result states", async () => {
+    const user = userEvent.setup();
+    mockedStockDemo.mockResolvedValue(stockResponse({ sample_data: true }));
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "SignalLab" }));
+    expect((await axe(container)).violations).toEqual([]);
+    await user.click(screen.getByRole("button", { name: "Load synthetic sample" }));
+    await screen.findByRole("heading", { name: "Research opinion for SYNTH_A" });
     expect((await axe(container)).violations).toEqual([]);
   });
 });

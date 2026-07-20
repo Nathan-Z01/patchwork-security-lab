@@ -67,6 +67,7 @@ jobs:
           uv pip install --python .wheel-smoke/bin/python dist/*.whl
           .wheel-smoke/bin/freshpatch --help >/dev/null
           .wheel-smoke/bin/aisec --help >/dev/null
+          .wheel-smoke/bin/signallab --help >/dev/null
           PATCHWORK_PORT=8765 PATCHWORK_WORKSPACE_ROOT="$PWD" \
             .wheel-smoke/bin/patchwork-api >wheel-server.log 2>&1 &
           server_pid=$!
@@ -83,6 +84,11 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:8765/api/health | grep --quiet '"status":"ok"'
           curl --fail --silent http://127.0.0.1:8765/ | grep --quiet 'id="root"'
+          curl --fail --silent \
+            --header 'Content-Type: application/json' \
+            --data '{"symbol":"SYNTH_A","benchmark":"SYNTH_MKT","horizon_days":20}' \
+            http://127.0.0.1:8765/api/stocks/demo >stock-opinion.json
+          python3 -c 'import json; result=json.load(open("stock-opinion.json", encoding="utf-8")); assert result["sample_data"] is True; assert result["symbol"] == "SYNTH_A"'
 
   container:
     runs-on: ubuntu-latest

@@ -1,6 +1,6 @@
 ---
 name: Patchwork Security Lab
-description: Calm, evidence-first tools for code-repair evaluation and AI security review.
+description: Calm, evidence-first tools for code repair, AI security, and transparent market research.
 colors:
   canvas: "oklch(1 0 0)"
   page: "oklch(0.97 0.006 242)"
@@ -92,11 +92,12 @@ components:
 
 **Creative North Star: "The Release Review Desk"**
 
-A developer is reviewing a release in a bright workroom and needs quiet,
-legible evidence rather than spectacle. The system combines GitHub Security's
-evidence density, Linear's disciplined hierarchy, and Stripe Docs' explanatory
-clarity. Product controls are familiar; distinctiveness comes from unusually
-clear evidence structure and honest language.
+A technical reviewer is working in a bright workroom and needs quiet, legible
+evidence rather than spectacle—whether inspecting a security finding, a repair
+result, or a market-model opinion. The system combines GitHub Security's evidence
+density, Linear's disciplined hierarchy, and Stripe Docs' explanatory clarity.
+Product controls are familiar; distinctiveness comes from unusually clear
+evidence structure and honest language.
 
 The visual system is light-first and restrained. Pure white work surfaces sit
 on a lightly blue-tinted structural field. Cobalt is a scarce signal for focus,
@@ -221,8 +222,9 @@ comes from order, severity labels, evidence, and current selection.
 ### Navigation
 
 The sticky top bar identifies the lab, current tool, and passive safety boundary.
-Source and website modes use conventional ARIA tabs with a bottom selection
-rule. On small screens the current-tool label collapses before the safety icon.
+A conventional top-level product switch separates Sentinel from SignalLab;
+source and website modes remain nested within Sentinel. On small screens the
+current-tool label collapses before the safety icon.
 
 ### Finding Workspace
 
@@ -230,6 +232,15 @@ The result surface uses a summary strip, filter row, selectable finding list,
 and detailed evidence pane. Selected rows use a complete background state, not
 a colored side stripe. Detail order is fixed: observation, impact, remediation,
 verification, references.
+
+### Market Research Workspace
+
+SignalLab uses the same evidence hierarchy without borrowing trading-terminal
+theater. The opinion always travels with its benchmark, horizon, as-of date,
+calibrated probability, untouched holdout metrics, factor contributions, and
+limitations. Bullish and bearish states include text and directional glyphs;
+green and red are never the only distinction. The disclaimer stays visible in
+the result rather than hiding behind an info icon.
 
 ## 6. Do's and Don'ts
 
@@ -244,6 +255,8 @@ verification, references.
   zero horizontal overflow at 390px.
 - **Do** say when a result is heuristic, incomplete, sample data, or blocked by
   a safety policy.
+- **Do** label synthetic market data and show the model's held-out error beside
+  every stock opinion.
 
 ### Don't:
 
@@ -257,3 +270,5 @@ verification, references.
 - **Don't** use display typography in buttons, table labels, filters, or code.
 - **Don't** combine a one-pixel border with a wide soft shadow or exceed 16px
   corners on panels.
+- **Don't** use “buy,” “sell,” “winner,” guaranteed-return language, or a lone
+  green/red score as an investment conclusion.

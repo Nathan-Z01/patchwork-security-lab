@@ -1,11 +1,14 @@
 # Patchwork Security Lab user guide
 
-Patchwork Security Lab contains two tools in one repository:
+Patchwork Security Lab contains three tools in one repository:
 
 - **Sentinel / `aisec`** reviews source code and bounded public website responses for AI and web-security risks.
 - **FreshPatch / `freshpatch`** creates, qualifies, and evaluates reproducible code-repair benchmark tasks.
+- **SignalLab / `signallab`** trains and evaluates a transparent stock-research
+  model, then explains its probabilistic opinion relative to a benchmark.
 
-The dashboard is a local interface for Sentinel. Both command-line tools work independently of the dashboard.
+The dashboard is a local interface for Sentinel and SignalLab. All three
+command-line tools work independently of the dashboard.
 
 ## 1. Install the project
 
@@ -26,6 +29,7 @@ project, inspect their module forms with:
 ```bash
 PYTHONPATH=src python3 -m aisec --help
 PYTHONPATH=src python3 -m freshpatch --help
+PYTHONPATH=src python3 -m signallab --help
 ```
 
 Clone the repository and enter its root directory:
@@ -50,8 +54,9 @@ make setup
 ```
 
 The first setup requires network access to download the locked dependencies.
-After setup, the local CLIs and deterministic FreshPatch fixture can run
-offline; public-URL scans still require network access to their target.
+After setup, the local CLIs, deterministic FreshPatch fixture, and synthetic
+SignalLab demonstration can run offline; public-URL scans still require network
+access to their target.
 
 Run the complete local test suite if you want to verify the checkout:
 
@@ -59,7 +64,7 @@ Run the complete local test suite if you want to verify the checkout:
 make test
 ```
 
-## 2. Use the Sentinel dashboard
+## 2. Use the dashboard
 
 Start the local API and bundled dashboard from the repository root:
 
@@ -84,13 +89,21 @@ PATCHWORK_WORKSPACE_ROOT="/absolute/path/to/project" make dev
 
 Then leave the dashboard source field as `.` or enter a path below that root. Paths that escape the configured root are rejected.
 
-The dashboard offers three useful flows:
+The **Sentinel** workspace offers three useful flows:
 
 1. **Load sample** displays clearly labeled demonstration evidence without scanning anything.
 2. **Source repository** reviews a server-local file or directory.
 3. **Public website** performs passive, bounded HTTP checks against an authorized public site.
 
 Results are ordered by severity. Select a finding to review its location, evidence, likely impact, remediation, and a verification step. JSON and SARIF export buttons preserve the result for review or automation. The API retains only the latest 100 scans in memory; restarting the server clears that list, so export evidence you need to keep.
+
+Switch to **SignalLab** for stock-model research. You can load the clearly labeled
+synthetic demonstration without any data setup, or enter a server-local CSV path,
+stock symbol, benchmark, and trading-session horizon. The result reports its
+as-of date, calibrated outperform probability, qualitative opinion, heuristic
+evidence strength, factor contributions, held-out chronological test metrics,
+limitations, and a research-only disclaimer. An analysis error does not erase
+the last successful result.
 
 Exports can contain absolute paths, source evidence, URLs, or repository data.
 Secret matches are redacted, but redaction cannot recognize every sensitive or
@@ -106,7 +119,7 @@ The available environment variables are:
 | `PATCHWORK_WORKSPACE_ROOT` | current directory | Highest directory the dashboard may scan |
 | `PATCHWORK_HOST` | `127.0.0.1` | API bind address |
 | `PATCHWORK_PORT` | `8765` | API and dashboard port |
-| `PATCHWORK_MAX_CONCURRENT_SCANS` | `4` | Concurrent source/URL scan limit, clamped to 1–32 |
+| `PATCHWORK_MAX_CONCURRENT_SCANS` | `4` | Concurrent scan/analysis limit, clamped to 1–32 |
 | `PATCHWORK_CORS_ORIGINS` | local Vite origins | Comma-separated development origins |
 
 Configuration is read from the process environment. `.env.example` is a
@@ -227,7 +240,91 @@ The URL scanner sends bounded `GET` requests only. It does not submit forms, exe
 
 The review covers observable browser-security headers, CORS response policy, cookie flags, password-form transport/origin, and AI-integration details present in returned HTML. It is not a penetration test.
 
-## 5. Build and evaluate FreshPatch tasks
+## 5. Train and inspect the SignalLab model
+
+SignalLab trains a probabilistic classifier for whether a stock will outperform
+a benchmark over a stated number of future trading sessions. It does not decide
+whether a company is fundamentally “good,” predict a price, or account for your
+financial situation. Read the [complete model card](signallab/README.md) before
+using real data.
+
+### Run the deterministic demonstration
+
+Generate a clearly labeled synthetic market, train a safe JSON model artifact,
+and analyze the demonstration symbol:
+
+```bash
+uv run signallab demo-data /tmp/signallab-demo.csv --rows 700
+
+uv run signallab train /tmp/signallab-demo.csv \
+  --output /tmp/signallab-model.json \
+  --benchmark SYNTH_MKT \
+  --horizon-days 20
+
+uv run signallab analyze /tmp/signallab-demo.csv SYNTH_A \
+  --artifact /tmp/signallab-model.json \
+  --benchmark SYNTH_MKT \
+  --sample-data
+```
+
+The commands refuse malformed inputs. `demo-data` also refuses to replace an
+existing destination unless `--force` is supplied. Output is JSON so the model,
+metrics, and opinion can be inspected or passed to another local tool.
+
+You can analyze directly without a saved artifact; SignalLab will train the
+deterministic model from that CSV first:
+
+```bash
+uv run signallab analyze /absolute/path/to/market-history.csv STOCK \
+  --benchmark SPY \
+  --horizon-days 20
+```
+
+### Prepare real market data
+
+SignalLab does not download market data or accept provider credentials. Create
+one UTF-8 long-format CSV with the columns below and preserve the provider and
+licensing details separately:
+
+```csv
+date,symbol,open,high,low,close,volume,adjusted_close
+2024-01-02,STOCK,101.2,103.0,100.8,102.4,1250000,102.4
+2024-01-02,SPY,472.1,473.7,470.5,472.6,84200000,472.6
+```
+
+`adjusted_close` is optional but strongly preferred; without it, splits and
+distributions can look like market moves. Each stock and benchmark need the same
+dates and several hundred daily observations for feature lookback, forward
+labels, purging, and useful train/validation/test periods. Data is bounded and
+strictly validated, including dates, normalized uppercase symbols, finite
+numbers, duplicate rows, and valid OHLC relationships.
+
+### Interpret and retrain responsibly
+
+The model combines L2-regularized logistic regression with gradient-boosted
+decision stumps. Feature scaling and both base models use the training period;
+ensemble blending and calibration use validation; overlapping forward labels
+are purged at both boundaries; and the final chronological test period is
+reserved for reported accuracy, balanced accuracy, Brier score, ROC AUC, base
+rate, and constant-probability baseline. Those holdout metrics also provide a
+conservative presentation gate: weak evidence forces a neutral result with Low
+heuristic evidence strength without changing the model's underlying probability.
+Because forward labels overlap, the result reports both labeled rows and a
+horizon-aware effective-window count. The [model card](signallab/README.md)
+defines every opinion and evidence-strength threshold.
+
+To incorporate newer observations, append validated rows to a new version of the
+CSV and run `train` again to create a new artifact. Keep both data SHA-256 and
+model artifact, compare the same predefined metrics, and do not repeatedly tune
+features against the reported test period. For serious experimentation, reserve
+a later unseen period or use nested walk-forward evaluation.
+
+Historical holdout performance does not guarantee future performance. SignalLab
+omits fundamentals, news, macroeconomic events, costs, liquidity, taxes,
+portfolio context, and personal suitability. Do not rely solely on its opinion
+for an investment decision.
+
+## 6. Build and evaluate FreshPatch tasks
 
 FreshPatch expects a local Git repository with a known buggy commit and a descendant fixed commit. It never fetches the repository recorded in a task.
 
@@ -337,7 +434,7 @@ uv run freshpatch verify \
 
 The local backend executes repository code with your host permissions. Use it only for code you trust. Docker is the default for unreviewed repositories or candidate patches; a disposable VM is stronger isolation for hostile workloads.
 
-## 6. Run the dashboard with Docker
+## 7. Run the dashboard with Docker
 
 Build and start the hardened local container:
 
@@ -370,7 +467,7 @@ FreshPatch launches its own per-evaluation Docker container and policy.
 
 Stop it with `Ctrl-C`, or run `docker compose down` if it was started in the background.
 
-## 7. Use the API directly
+## 8. Use the API directly
 
 Interactive OpenAPI documentation is available at [http://127.0.0.1:8765/docs](http://127.0.0.1:8765/docs) while the server is running.
 
@@ -388,7 +485,24 @@ curl --fail \
   --header 'Content-Type: application/json' \
   --data '{"url":"https://example.com","timeout_seconds":10}' \
   http://127.0.0.1:8765/api/scans/url
+
+curl --fail \
+  --request POST \
+  --header 'Content-Type: application/json' \
+  --data '{"symbol":"SYNTH_A","benchmark":"SYNTH_MKT","horizon_days":20}' \
+  http://127.0.0.1:8765/api/stocks/demo
+
+curl --fail \
+  --request POST \
+  --header 'Content-Type: application/json' \
+  --data '{"data_path":"data/market.csv","symbol":"STOCK","benchmark":"SPY","horizon_days":20}' \
+  http://127.0.0.1:8765/api/stocks/analyze
 ```
+
+The stock data path is server-local, must end in `.csv`, and must resolve beneath
+`PATCHWORK_WORKSPACE_ROOT`. Both stock endpoints run locally without a data or
+model-provider network request. `demo` is synthetic; `analyze` trains and
+evaluates from the supplied CSV before producing an opinion.
 
 Fetch a stored result or export by scan ID:
 
@@ -398,7 +512,7 @@ curl --fail --output scan.sarif \
   http://127.0.0.1:8765/api/scans/SCAN_ID/export/sarif
 ```
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 ### `make: getcwd: Operation not permitted`
 
@@ -491,7 +605,7 @@ export UV_CACHE_DIR="$PWD/.cache/uv"
 After `make setup`, you can also run `.venv/bin/aisec` and
 `.venv/bin/freshpatch` directly without asking uv to synchronize the project.
 
-## 9. Developer checks
+## 10. Developer checks
 
 Before opening a pull request, run:
 

@@ -4,6 +4,7 @@ from importlib.metadata import version
 
 import aisec
 import freshpatch
+import signallab
 from aisec import ScanReport
 from aisec.reports import sarif_report
 from patchwork_api.app import create_app
@@ -14,6 +15,7 @@ def test_release_version_and_project_url_are_canonical() -> None:
     assert version("patchwork-security-lab") == __version__
     assert aisec.__version__ == __version__
     assert freshpatch.__version__ == __version__
+    assert signallab.__version__ == __version__
     assert create_app().version == __version__
 
     report = ScanReport(".", "source").finish()

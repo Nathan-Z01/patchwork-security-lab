@@ -12,10 +12,11 @@ import inspect
 import json
 import logging
 import os
+import re
 from collections import Counter, OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import Enum
 from pathlib import Path
 from threading import BoundedSemaphore, RLock
@@ -24,11 +25,18 @@ from typing import Any, Literal, Optional, cast
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from starlette.concurrency import run_in_threadpool
 
 from patchwork_common import PROJECT_URL, __version__
@@ -38,11 +46,17 @@ TargetType = Literal["source", "url", "demo"]
 ScanStatus = Literal["completed", "partial", "failed"]
 ScanCompleteness = Literal["complete", "partial", "failed"]
 
+_TICKER_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,15}$")
+
 logger = logging.getLogger(__name__)
 
 
 class ScannerContractError(RuntimeError):
     """Raised when a core scanner returns an untrustworthy result shape."""
+
+
+class StockContractError(RuntimeError):
+    """Raised when stock research returns an untrustworthy result shape."""
 
 
 class SourceScanRequest(BaseModel):
@@ -78,6 +92,179 @@ class UrlScanRequest(BaseModel):
         if parsed.username or parsed.password:
             raise ValueError("URLs with embedded credentials are not supported.")
         return value
+
+
+def _validated_ticker(value: str) -> str:
+    """Normalize a conventional exchange ticker without accepting free-form text."""
+
+    normalized = value.strip().upper()
+    if not _TICKER_PATTERN.fullmatch(normalized):
+        raise ValueError(
+            "Use a 1–16 character ticker containing letters, numbers, dots, "
+            "underscores, or hyphens."
+        )
+    return normalized
+
+
+def _validated_iso_date(value: str) -> str:
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("Use a valid ISO calendar date in YYYY-MM-DD format.") from exc
+    if parsed.isoformat() != value:
+        raise ValueError("Use a valid ISO calendar date in YYYY-MM-DD format.")
+    return value
+
+
+class StockAnalysisRequest(BaseModel):
+    """A server-local market-history CSV and the prediction to research."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    data_path: str = Field(min_length=1, max_length=4096)
+    symbol: str = Field(min_length=1, max_length=16)
+    benchmark: str = Field(default="SPY", min_length=1, max_length=16)
+    horizon_days: int = Field(default=20, ge=5, le=60)
+
+    @field_validator("data_path")
+    @classmethod
+    def validate_data_path(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Enter a CSV data path.")
+        if "\x00" in normalized:
+            raise ValueError("Data paths cannot contain null bytes.")
+        return normalized
+
+    @field_validator("symbol", "benchmark")
+    @classmethod
+    def validate_ticker(cls, value: str) -> str:
+        return _validated_ticker(value)
+
+
+class StockDemoRequest(BaseModel):
+    """Parameters for the bundled, deterministic stock-research demonstration."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    symbol: str = Field(default="SYNTH_A", min_length=1, max_length=16)
+    benchmark: str = Field(default="SYNTH_MKT", min_length=1, max_length=16)
+    horizon_days: int = Field(default=20, ge=5, le=60)
+
+    @field_validator("symbol", "benchmark")
+    @classmethod
+    def validate_ticker(cls, value: str) -> str:
+        return _validated_ticker(value)
+
+
+class _StrictStockModel(BaseModel):
+    """Fail-closed base for values crossing the stock-research API boundary."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class StockRationale(_StrictStockModel):
+    feature: str = Field(min_length=1, max_length=128)
+    label: str = Field(min_length=1, max_length=200)
+    value: float = Field(allow_inf_nan=False)
+    direction: Literal["positive", "negative", "neutral"]
+    explanation: str = Field(min_length=1, max_length=1_000)
+
+
+class StockEvaluation(_StrictStockModel):
+    test_start: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    test_end: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    samples: int = Field(ge=1, le=10_000_000)
+    effective_windows: int = Field(ge=0, le=10_000_000)
+    accuracy: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    balanced_accuracy: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    brier_score: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    constant_brier: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    roc_auc: Optional[float] = Field(default=None, ge=0.0, le=1.0, allow_inf_nan=False)
+    base_rate: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+
+    @field_validator("test_start", "test_end")
+    @classmethod
+    def validate_dates(cls, value: str) -> str:
+        return _validated_iso_date(value)
+
+    @model_validator(mode="after")
+    def validate_effective_windows(self) -> StockEvaluation:
+        if self.effective_windows > self.samples:
+            raise ValueError("Effective test windows cannot exceed labeled test rows.")
+        return self
+
+
+class StockModelMetadata(_StrictStockModel):
+    name: str = Field(min_length=1, max_length=200)
+    version: str = Field(min_length=1, max_length=64)
+    trained_through: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    training_rows: int = Field(ge=1, le=100_000_000)
+    symbols: list[str] = Field(min_length=1, max_length=1_000)
+    feature_count: int = Field(ge=1, le=100_000)
+    evaluation: StockEvaluation
+
+    @field_validator("trained_through")
+    @classmethod
+    def validate_trained_through(cls, value: str) -> str:
+        return _validated_iso_date(value)
+
+    @field_validator("symbols")
+    @classmethod
+    def validate_symbols(cls, values: list[str]) -> list[str]:
+        normalized = [_validated_ticker(value) for value in values]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Model symbol metadata cannot contain duplicates.")
+        return normalized
+
+
+class StockOpinionResponse(_StrictStockModel):
+    id: str = Field(min_length=1, max_length=128)
+    symbol: str = Field(min_length=1, max_length=16)
+    benchmark: str = Field(min_length=1, max_length=16)
+    as_of: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    horizon_days: int = Field(ge=5, le=60)
+    opinion: Literal["bullish", "neutral", "bearish"]
+    probability_outperform: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    confidence: Literal["low", "moderate", "high"]
+    sample_data: bool
+    rationale: list[StockRationale] = Field(min_length=1, max_length=50)
+    limitations: list[str] = Field(min_length=1, max_length=50)
+    disclaimer: str = Field(min_length=1, max_length=2_000)
+    model: StockModelMetadata
+
+    @field_validator("as_of")
+    @classmethod
+    def validate_as_of(cls, value: str) -> str:
+        return _validated_iso_date(value)
+
+    @field_validator("symbol", "benchmark")
+    @classmethod
+    def validate_ticker(cls, value: str) -> str:
+        return _validated_ticker(value)
+
+    @model_validator(mode="after")
+    def validate_model_provenance(self) -> StockOpinionResponse:
+        evaluation = self.model.evaluation
+        if not (
+            self.model.trained_through
+            < evaluation.test_start
+            <= evaluation.test_end
+            <= self.as_of
+        ):
+            raise ValueError(
+                "Model training, test, and opinion dates must be chronologically ordered."
+            )
+        if self.symbol not in self.model.symbols:
+            raise ValueError("The analyzed symbol must appear in the model training symbols.")
+        return self
+
+    @field_validator("limitations")
+    @classmethod
+    def validate_limitations(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() or len(value) > 500 for value in values):
+            raise ValueError("Limitations must be non-empty and at most 500 characters each.")
+        return values
 
 
 class EvidenceItem(BaseModel):
@@ -152,6 +339,8 @@ class ScanResponse(BaseModel):
 
 _scan_source_impl: Any | None = None
 _scan_url_impl: Any | None = None
+_stock_research_impl: Any | None = None
+_stock_demo_research_impl: Any | None = None
 MAX_STORED_SCANS = 100
 DEFAULT_MAX_CONCURRENT_SCANS = 4
 MAX_CONFIGURED_CONCURRENT_SCANS = 32
@@ -206,13 +395,35 @@ def _resolve_scanner(kind: Literal["source", "url"]) -> Any:
     return _scan_source_impl if kind == "source" else _scan_url_impl
 
 
-async def _invoke_scanner(scanner: Any, target: str, **options: Any) -> Any:
+def _resolve_stock_research(kind: Literal["research", "demo"]) -> Any:
+    """Lazily load only SignalLab's public, local-data research functions."""
+
+    global _stock_research_impl, _stock_demo_research_impl
+
+    current = _stock_research_impl if kind == "research" else _stock_demo_research_impl
+    if current is not None:
+        return current
+
+    try:
+        from signallab import demo_research, research
+    except ImportError as exc:  # pragma: no cover - depends on packaging/install state
+        raise HTTPException(
+            status_code=503,
+            detail="The stock research model is not installed in this environment.",
+        ) from exc
+
+    _stock_research_impl = research
+    _stock_demo_research_impl = demo_research
+    return _stock_research_impl if kind == "research" else _stock_demo_research_impl
+
+
+async def _invoke_scanner(scanner: Any, target: Any, *args: Any, **options: Any) -> Any:
     """Call async scanners directly and keep synchronous work off the event loop."""
 
     if inspect.iscoroutinefunction(scanner):
-        return await scanner(target, **options)
+        return await scanner(target, *args, **options)
 
-    result = await run_in_threadpool(scanner, target, **options)
+    result = await run_in_threadpool(scanner, target, *args, **options)
     if inspect.isawaitable(result):
         return await result
     return result
@@ -221,7 +432,8 @@ async def _invoke_scanner(scanner: Any, target: str, **options: Any) -> Any:
 async def _invoke_bounded_scanner(
     scanner: Any,
     slots: BoundedSemaphore,
-    target: str,
+    target: Any,
+    *args: Any,
     **options: Any,
 ) -> Any:
     """Run a scan only when capacity is immediately available."""
@@ -233,9 +445,53 @@ async def _invoke_bounded_scanner(
             headers={"Retry-After": "1"},
         )
     try:
-        return await _invoke_scanner(scanner, target, **options)
+        return await _invoke_scanner(scanner, target, *args, **options)
     finally:
         slots.release()
+
+
+def _normalize_stock_opinion(result: Any) -> StockOpinionResponse:
+    """Validate the complete model response before exposing any of it to clients."""
+
+    to_dict = getattr(result, "to_dict", None)
+    if not callable(to_dict):
+        raise StockContractError("stock research result must provide to_dict()")
+    try:
+        raw = to_dict()
+    except Exception as exc:
+        raise StockContractError("stock research result could not be serialized") from exc
+    if not isinstance(raw, Mapping):
+        raise StockContractError("stock research result must be an object")
+
+    payload = dict(raw)
+    payload.setdefault("id", str(uuid4()))
+    try:
+        opinion = StockOpinionResponse.model_validate(payload)
+        # A second serialization check prevents NaN, Infinity, or custom values
+        # from crossing this trust boundary even if a validator changes later.
+        json.dumps(opinion.model_dump(mode="json"), allow_nan=False)
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise StockContractError("stock research result failed contract validation") from exc
+    return opinion
+
+
+def _assert_stock_opinion_matches(
+    opinion: StockOpinionResponse,
+    *,
+    symbol: str,
+    benchmark: str,
+    horizon_days: int,
+    sample_data: bool,
+) -> None:
+    """Prevent a mislabeled or stale model result from being returned as requested."""
+
+    if (
+        opinion.symbol != symbol
+        or opinion.benchmark != benchmark
+        or opinion.horizon_days != horizon_days
+        or opinion.sample_data is not sample_data
+    ):
+        raise StockContractError("stock research result does not match the request")
 
 
 def _jsonable(value: Any) -> Any:
@@ -874,6 +1130,25 @@ def _resolve_source_target(raw_path: str) -> Path:
     return candidate
 
 
+def _resolve_stock_data_target(raw_path: str) -> Path:
+    """Resolve a readable CSV using the same workspace boundary as source scans."""
+
+    candidate = _resolve_source_target(raw_path)
+    if not candidate.is_file():
+        raise HTTPException(
+            status_code=422,
+            detail="The stock data target must be a regular CSV file.",
+        )
+    if candidate.suffix.lower() != ".csv":
+        raise HTTPException(
+            status_code=422,
+            detail="The stock data target must use the .csv extension.",
+        )
+    if not os.access(candidate, os.R_OK):
+        raise HTTPException(status_code=403, detail="The stock data target is not readable.")
+    return candidate
+
+
 def _get_scan(scan_id: str) -> ScanResponse:
     with _SCANS_LOCK:
         scan = _SCANS.get(scan_id)
@@ -895,6 +1170,40 @@ def _error_from_scanner(exc: Exception) -> HTTPException:
         status_code=502,
         detail=(
             "The scanner could not complete this request. "
+            f"Review the server log with error ID {error_id}."
+        ),
+        headers={"X-Patchwork-Error-ID": error_id},
+    )
+
+
+def _error_from_stock_research(exc: Exception) -> HTTPException:
+    """Map stock-domain failures without reflecting paths, rows, or secrets."""
+
+    if isinstance(exc, HTTPException):
+        return exc
+    is_safe_domain_error = isinstance(
+        exc, (ValueError, FileNotFoundError, NotADirectoryError, PermissionError)
+    ) and not isinstance(exc, StockContractError)
+    try:
+        from signallab.errors import SignalLabError
+    except ImportError:  # pragma: no cover - only possible in a partial installation
+        pass
+    else:
+        is_safe_domain_error = is_safe_domain_error or isinstance(exc, SignalLabError)
+    if is_safe_domain_error:
+        return HTTPException(
+            status_code=422,
+            detail=(
+                "The stock dataset could not be analyzed. Check the CSV contents, "
+                "symbol, benchmark, and horizon."
+            ),
+        )
+    error_id = uuid4().hex
+    logger.exception("Unexpected stock research failure (error_id=%s)", error_id)
+    return HTTPException(
+        status_code=502,
+        detail=(
+            "The stock research model could not complete this request. "
             f"Review the server log with error ID {error_id}."
         ),
         headers={"X-Patchwork-Error-ID": error_id},
@@ -951,7 +1260,10 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title="Patchwork Security Lab API",
         version=__version__,
-        description="Evidence-first source and public website security scanning.",
+        description=(
+            "Evidence-first security scanning and local-data stock research. "
+            "Stock opinions are research outputs, not financial advice."
+        ),
     )
     max_concurrent_scans = _configured_concurrency()
     scan_slots = BoundedSemaphore(max_concurrent_scans)
@@ -989,6 +1301,19 @@ def create_app() -> FastAPI:
     @application.get("/api/health", tags=["system"])
     def health() -> dict[str, str]:
         return {"status": "ok", "service": "patchwork-api"}
+
+    @application.get("/api/capabilities", tags=["system"])
+    def capabilities() -> dict[str, Any]:
+        return {
+            "security_scanning": {"source": True, "public_url": True},
+            "stock_research": {
+                "enabled": True,
+                "local_csv_only": True,
+                "network_fetching": False,
+                "horizon_days": {"minimum": 5, "maximum": 60},
+                "disclaimer": "Research output only; not financial advice.",
+            },
+        }
 
     @application.post("/api/scans/source", response_model=ScanResponse, tags=["scans"])
     async def scan_source_endpoint(request: SourceScanRequest) -> ScanResponse:
@@ -1053,6 +1378,69 @@ def create_app() -> FastAPI:
                 duration_ms=236,
             )
         )
+
+    @application.post(
+        "/api/stocks/analyze",
+        response_model=StockOpinionResponse,
+        tags=["stock research"],
+    )
+    async def analyze_stock_endpoint(request: StockAnalysisRequest) -> StockOpinionResponse:
+        """Train/evaluate SignalLab against a bounded server-local CSV dataset."""
+
+        data_target = _resolve_stock_data_target(request.data_path)
+        analyzer = _resolve_stock_research("research")
+        try:
+            result = await _invoke_bounded_scanner(
+                analyzer,
+                scan_slots,
+                data_target,
+                request.symbol,
+                benchmark=request.benchmark,
+                horizon_days=request.horizon_days,
+            )
+            opinion = _normalize_stock_opinion(result)
+            _assert_stock_opinion_matches(
+                opinion,
+                symbol=request.symbol,
+                benchmark=request.benchmark,
+                horizon_days=request.horizon_days,
+                sample_data=False,
+            )
+        except Exception as exc:
+            raise _error_from_stock_research(exc) from exc
+        return opinion
+
+    @application.post(
+        "/api/stocks/demo",
+        response_model=StockOpinionResponse,
+        tags=["stock research"],
+    )
+    async def demo_stock_endpoint(
+        request: Optional[StockDemoRequest] = Body(default=None),  # noqa: B008
+    ) -> StockOpinionResponse:
+        """Run the bundled deterministic sample without reading a user dataset."""
+
+        parameters = request if request is not None else StockDemoRequest()
+        analyzer = _resolve_stock_research("demo")
+        try:
+            result = await _invoke_bounded_scanner(
+                analyzer,
+                scan_slots,
+                parameters.symbol,
+                benchmark=parameters.benchmark,
+                horizon_days=parameters.horizon_days,
+            )
+            opinion = _normalize_stock_opinion(result)
+            _assert_stock_opinion_matches(
+                opinion,
+                symbol=parameters.symbol,
+                benchmark=parameters.benchmark,
+                horizon_days=parameters.horizon_days,
+                sample_data=True,
+            )
+        except Exception as exc:
+            raise _error_from_stock_research(exc) from exc
+        return opinion
 
     @application.get("/api/scans", response_model=list[ScanResponse], tags=["scans"])
     def list_scans(limit: int = Query(default=10, ge=1, le=50)) -> list[ScanResponse]:
@@ -1120,6 +1508,9 @@ app = create_app()
 __all__ = [
     "ScanResponse",
     "SourceScanRequest",
+    "StockAnalysisRequest",
+    "StockDemoRequest",
+    "StockOpinionResponse",
     "UrlScanRequest",
     "app",
     "create_app",

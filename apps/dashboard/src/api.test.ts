@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { scanDemo, scanSource, scanUrl } from "./api";
+import { analyzeStock, scanDemo, scanSource, scanUrl, stockDemo } from "./api";
 
 const sampleScan = {
   id: "scan-1",
@@ -69,5 +69,55 @@ describe("scan API client", () => {
     );
 
     await expect(scanDemo()).rejects.toThrow("Private network targets are not allowed.");
+  });
+});
+
+describe("stock research API client", () => {
+  it("maps the dashboard CSV field to the server data_path contract", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: "analysis-1" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await analyzeStock({
+      csvPath: "/workspace/data/prices.csv",
+      symbol: "AAPL",
+      benchmark: "SPY",
+      horizonDays: 20,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/stocks/analyze",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          data_path: "/workspace/data/prices.csv",
+          symbol: "AAPL",
+          benchmark: "SPY",
+          horizon_days: 20,
+        }),
+      }),
+    );
+  });
+
+  it("sends demo parameters without requiring a CSV path", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: "analysis-demo" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await stockDemo({ symbol: "MSFT", benchmark: "SPY", horizonDays: 40 });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/stocks/demo",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ symbol: "MSFT", benchmark: "SPY", horizon_days: 40 }),
+      }),
+    );
   });
 });
